@@ -88,7 +88,7 @@ You can configure the application by creating a `.env` file with the following o
 
 ```
 OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=llama3
+OLLAMA_MODEL=llama3.2
 OLLAMA_TIMEOUT=30
 DEBUG=False
 ```
