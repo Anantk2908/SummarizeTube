@@ -13,6 +13,8 @@ from chromadb.utils import embedding_functions
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import ollama
 from dotenv import load_dotenv
+from urllib.parse import urlparse, parse_qs
+import traceback
 
 # Load environment variables from .env file
 load_dotenv()
@@ -49,11 +51,51 @@ whisper_model = None  # Lazy loading to save memory
 
 # Function to extract video ID from URL
 def extract_video_id(youtube_url):
-    if "youtube.com" in youtube_url:
-        return youtube_url.split("v=")[-1].split("&")[0]
-    elif "youtu.be" in youtube_url:
-        return youtube_url.split("/")[-1]
-    return None
+    """
+    Extract video ID from various YouTube URL formats:
+    - youtube.com/watch?v=...
+    - youtu.be/...
+    - youtube.com/shorts/...
+    - youtube.com/embed/...
+    - youtube.com/v/...
+    """
+    if not youtube_url:
+        return None
+        
+    # Remove any whitespace and get the base URL
+    youtube_url = youtube_url.strip()
+    
+    # Handle URLs with or without protocol
+    if youtube_url.startswith('//'):
+        youtube_url = 'https:' + youtube_url
+    elif not youtube_url.startswith(('http://', 'https://')):
+        youtube_url = 'https://' + youtube_url
+    
+    try:
+        # Parse the URL
+        parsed_url = urlparse(youtube_url)
+        
+        # Handle youtu.be URLs
+        if parsed_url.netloc == 'youtu.be':
+            return parsed_url.path.strip('/')
+            
+        # Handle various youtube.com formats
+        if parsed_url.netloc in ['youtube.com', 'www.youtube.com']:
+            # Handle /watch URLs
+            if parsed_url.path == '/watch':
+                query = parse_qs(parsed_url.query)
+                return query.get('v', [None])[0]
+                
+            # Handle /shorts/, /embed/, and /v/ URLs
+            for path_prefix in ['/shorts/', '/embed/', '/v/']:
+                if parsed_url.path.startswith(path_prefix):
+                    return parsed_url.path.replace(path_prefix, '').split('/')[0]
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error extracting video ID: {str(e)}")
+        return None
 
 # Function to get transcript with timestamps (if available)
 def get_youtube_transcript(video_id):
@@ -385,11 +427,20 @@ def process_video():
     })
 
 # Define prompt templates
-QA_PROMPT_TEMPLATE = """You are a helpful AI that answers questions about YouTube videos.
-Use ONLY the transcript segments provided below to answer the question.
-If the information is not in the segments, respond with "This information is not in the video."
-Do NOT include phrases like "based on the transcript" or "the video says" in your answer.
-Give direct, concise answers without mentioning the source of your information.
+QA_PROMPT_TEMPLATE = """You are a highly knowledgeable AI assistant that provides accurate, detailed answers about YouTube video content.
+
+Your task is to answer questions about the video using ONLY the provided transcript segments. Follow these guidelines:
+
+1. Use ONLY the information from the provided transcript segments
+2. If the exact information isn't in the segments, say "This information is not in the video segments provided."
+3. If you can make a reasonable inference from the segments, start with "Based on the context..."
+4. Look for related terminology or descriptions that may answer the question indirectly
+5. If the video compares different models, consider if the answer might be implied when discussing features
+6. Keep answers concise but complete
+7. If segments contain technical terms or specific names, maintain their exact usage
+8. If segments show chronological events, maintain the correct sequence
+9. If the answer requires combining information from multiple segments, ensure logical connection
+10. For questions about motorcycle features, check for discussions about specifications, comparisons, or riding experience
 
 TRANSCRIPT SEGMENTS:
 {context}
@@ -398,10 +449,20 @@ QUESTION: {question}
 
 ANSWER:"""
 
-SUMMARY_PROMPT_TEMPLATE = """Create a concise summary of the YouTube video titled "{title}" based on these transcript excerpts.
-Focus on the main points and key information.
-Be direct and objective, using 3-4 paragraphs.
-Do NOT mention that you're summarizing transcript excerpts.
+SUMMARY_PROMPT_TEMPLATE = """You are an expert content analyst creating high-quality video summaries.
+
+Create a comprehensive summary of the YouTube video titled "{title}". Follow these guidelines:
+
+1. Structure the summary in 1-2 clear paragraphs
+2. Begin with the main topic or purpose of the video
+3. Highlight key points in order of importance
+4. Include specific details, numbers, or examples when available
+5. Maintain any technical terminology used in the video
+6. If the content is instructional, outline the main steps or concepts
+7. If it's a discussion, capture the main arguments or viewpoints
+8. End with the video's conclusion or key takeaway
+9. Use clear, professional language
+10. Do NOT mention that this is based on transcript excerpts
 
 TRANSCRIPT EXCERPTS:
 {context}
@@ -544,6 +605,41 @@ def summarize_video_stream():
             "error": f"Model '{model_name}' not found in Ollama. Please run 'ollama pull {model_name}' first."
         }), 400
 
+    # First check if we already have a cached summary
+    try:
+        cached_results = collection.get(
+            where={"video_id": video_id, "type": "summary"},
+            include=["documents", "metadatas"]
+        )
+        
+        if cached_results["documents"] and len(cached_results["documents"]) > 0:
+            # Return cached summary as a stream event
+            print(f"Returning cached summary for video {video_id}")
+            
+            # Get video title from metadata
+            video_title = cached_results["metadatas"][0]["title"] if cached_results["metadatas"] else f"Video {video_id}"
+            summary_text = cached_results["documents"][0]
+            created_at = cached_results["metadatas"][0].get("created_at", "unknown time")
+            
+            # Set response headers for SSE
+            def generate_cached():
+                # First yield the title
+                yield f"data: {json.dumps({'title': video_title, 'type': 'title'})}\n\n"
+                
+                # Then yield the cached content
+                yield f"data: {json.dumps({'content': summary_text, 'cached': True, 'created_at': created_at})}\n\n"
+                
+                # Signal completion
+                yield f"data: {json.dumps({'content': '', 'done': True, 'full_response': summary_text})}\n\n"
+            
+            return Response(stream_with_context(generate_cached()), 
+                           mimetype='text/event-stream',
+                           headers={'Cache-Control': 'no-cache', 
+                                   'X-Accel-Buffering': 'no'})
+    except Exception as e:
+        print(f"Error checking for cached summary: {str(e)}")
+        # Continue with generating a new summary
+
     # Query database for all chunks
     results = collection.query(
         query_texts=["What is this video about?"],  # General query to get relevant chunks
@@ -583,8 +679,38 @@ def summarize_video_stream():
         # First yield the title so frontend has it right away
         yield f"data: {json.dumps({'title': video_title, 'type': 'title'})}\n\n"
         
-        # Then yield the content as it streams
-        yield from stream_ollama_response(model_name, prompt)
+        # Store for saving the complete summary
+        full_summary = ""
+        
+        # Stream each chunk as it arrives
+        for chunk in stream_ollama_response(model_name, prompt):
+            yield chunk
+            
+            # Extract content from chunk to build full summary
+            try:
+                chunk_data = json.loads(chunk.replace('data: ', ''))
+                if 'content' in chunk_data and chunk_data['content']:
+                    full_summary += chunk_data['content']
+                
+                # If this is the final chunk, save the summary
+                if chunk_data.get('done', False) and full_summary:
+                    try:
+                        timestamp = datetime.now().isoformat()
+                        collection.upsert(
+                            ids=[f"{video_id}_summary"],
+                            metadatas=[{
+                                "video_id": video_id,
+                                "title": video_title,
+                                "type": "summary",
+                                "created_at": timestamp
+                            }],
+                            documents=[full_summary]
+                        )
+                        print(f"Cached summary for video {video_id}")
+                    except Exception as e:
+                        print(f"Error caching summary: {str(e)}")
+            except:
+                pass  # Skip any parsing errors
     
     return Response(stream_with_context(generate()), 
                    mimetype='text/event-stream',
@@ -644,38 +770,33 @@ def get_chunks():
         return jsonify({"error": "Missing video_id parameter"}), 400
     
     try:
-        # Query for all chunks belonging to this video
-        results = collection.query(
-            query_texts=[""],  # Empty query to get all chunks
+        # Get all chunks for this video
+        all_chunks = collection.get(
             where={"video_id": video_id},
-            n_results=100,  # Get more chunks, adjust as needed
             include=["metadatas", "documents"]
         )
         
-        if not results["documents"] or len(results["documents"][0]) == 0:
+        if not all_chunks["documents"]:
             return jsonify({"error": "No chunks found for this video ID"}), 404
         
-        # Prepare response with chunks and their metadata
+        # Prepare response with chunks and their metadata, filtering out summaries
         chunks = []
-        for i, doc in enumerate(results["documents"][0]):
-            if i < len(results["metadatas"][0]):
-                metadata = results["metadatas"][0][i]
-                chunks.append({
-                    "id": i,
-                    "text": doc,
-                    "timestamp": metadata.get("timestamp", 0),
-                    "formatted_time": metadata.get("formatted_time", "00:00:00"),
-                    "metadata": metadata
-                })
-            else:
-                chunks.append({
-                    "id": i,
-                    "text": doc,
-                    "timestamp": 0,
-                    "formatted_time": "00:00:00",
-                    "metadata": {}
-                })
+        for i, doc in enumerate(all_chunks["documents"]):
+            if i < len(all_chunks["metadatas"]):
+                metadata = all_chunks["metadatas"][i]
+                # Only include if it's not a summary document
+                if metadata.get("type") != "summary":
+                    chunks.append({
+                        "id": len(chunks),  # Use new index for filtered list
+                        "text": doc,
+                        "timestamp": metadata.get("timestamp", 0),
+                        "formatted_time": metadata.get("formatted_time", "00:00:00"),
+                        "metadata": metadata
+                    })
         
+        if not chunks:
+            return jsonify({"error": "No transcript chunks found for this video"}), 404
+            
         # Sort chunks by timestamp
         chunks.sort(key=lambda x: x["timestamp"])
         
@@ -686,6 +807,8 @@ def get_chunks():
         })
         
     except Exception as e:
+        print(f"Error retrieving chunks: {str(e)}")
+        print(traceback.format_exc())
         return jsonify({"error": f"Error retrieving chunks: {str(e)}"}), 500
 
 @app.route("/ask", methods=["POST"])
@@ -708,48 +831,167 @@ def ask_question():
             "error": f"Model '{model_name}' not found in Ollama. Please run 'ollama pull {model_name}' first."
         }), 400
 
-    # Query database for relevant chunks
-    results = collection.query(
-        query_texts=[question], 
-        where={"video_id": video_id},
-        n_results=5,
-        include=["metadatas", "documents"]
-    )
-
-    if not results["documents"] or len(results["documents"][0]) == 0:
-        return jsonify({"error": "No content found for this video ID"}), 404
-
-    # Prepare context from retrieved chunks
-    retrieved_chunks = results["documents"][0]
-    context = "\n\n".join(retrieved_chunks)
-    
-    # Get timestamps
-    timestamps = []
-    for metadata in results["metadatas"][0]:
-        timestamps.append({
-            "time": metadata["timestamp"],
-            "formatted_time": metadata["formatted_time"],
-            "text_preview": metadata["text_preview"]
-        })
-    
-    # Format prompt using the template
-    prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
-
     try:
-        # Query Ollama (using environment variable set at the top of the file)
-        start_time = time.time()
-        response = ollama.chat(
-            model=model_name, 
-            messages=[{"role": "user", "content": prompt}]
-        )
-        end_time = time.time()
+        print(f"Querying ChromaDB for video_id: {video_id}")
         
-        return jsonify({
-            "answer": response["message"]["content"],
-            "timestamps": timestamps,
-            "time_taken": round(end_time - start_time, 2)
-        })
+        # First get all chunks for this video (without $not operator which isn't supported in get())
+        all_chunks = collection.get(
+            where={"video_id": video_id},
+            include=["metadatas", "documents"]
+        )
+        
+        if not all_chunks["documents"]:
+            return jsonify({"error": "No content found for this video ID"}), 404
+            
+        # Filter out summaries manually (since we can't use $not in get())
+        filtered_docs = []
+        filtered_metadatas = []
+        
+        for i, metadata in enumerate(all_chunks["metadatas"]):
+            if metadata.get("type") != "summary":
+                filtered_docs.append(all_chunks["documents"][i])
+                filtered_metadatas.append(metadata)
+        
+        if not filtered_docs:
+            return jsonify({"error": "No transcript chunks found for this video"}), 404
+            
+        print(f"Found {len(filtered_docs)} transcript chunks for video")
+        
+        # Then query for relevant chunks
+        results = collection.query(
+            query_texts=[question],
+            where={"video_id": video_id},
+            n_results=12,  # Increased from 8 to get more candidates
+            include=["metadatas", "documents", "distances"]
+        )
+        
+        print(f"Query returned {len(results['documents'][0])} chunks")
+        
+        # Filter out summaries from query results
+        filtered_results_docs = []
+        filtered_results_metadatas = []
+        filtered_results_distances = []
+        
+        for i, metadata in enumerate(results["metadatas"][0]):
+            if metadata.get("type") != "summary":
+                filtered_results_docs.append(results["documents"][0][i])
+                filtered_results_metadatas.append(metadata)
+                if "distances" in results and results["distances"]:
+                    filtered_results_distances.append(results["distances"][0][i])
+        
+        if not filtered_results_docs:
+            return jsonify({"error": "No relevant transcript chunks found for this question"}), 404
+            
+        print(f"After filtering, using {len(filtered_results_docs)} relevant chunks")
+
+        # Get chunks and their timestamps
+        chunks_with_time = []
+        for i, doc in enumerate(filtered_results_docs):
+            metadata = filtered_results_metadatas[i]
+            score = float(filtered_results_distances[i]) if filtered_results_distances else 1.0
+            chunks_with_time.append({
+                "text": doc,
+                "timestamp": float(metadata.get("timestamp", 0)),
+                "formatted_time": metadata.get("formatted_time", "00:00:00"),
+                "text_preview": metadata.get("text_preview", ""),
+                "score": score
+            })
+            print(f"Chunk {i}: score={score:.4f}, time={metadata.get('formatted_time', '00:00:00')}, preview={metadata.get('text_preview', '')[:50]}")
+
+        # Sort chunks by timestamp to maintain chronological order
+        chunks_with_time.sort(key=lambda x: x["timestamp"])
+
+        # Select chunks based on relevance and continuity
+        selected_chunks = []
+        timestamps = []
+        
+        # Use a more forgiving relevance threshold to include more potentially relevant chunks
+        relevance_threshold = 0.5  # Increased from 0.3
+        
+        # First add highly relevant chunks (low distance score)
+        for chunk in chunks_with_time:
+            if chunk["score"] < relevance_threshold:
+                selected_chunks.append(chunk["text"])
+                timestamps.append({
+                    "time": chunk["timestamp"],
+                    "formatted_time": chunk["formatted_time"],
+                    "text_preview": chunk["text_preview"]
+                })
+                print(f"Selected chunk with score {chunk['score']:.4f}: {chunk['text_preview'][:50]}")
+        
+        # If we don't have enough chunks by relevance, add the most relevant ones regardless of threshold
+        if len(selected_chunks) < 3:
+            # Sort by relevance
+            sorted_by_relevance = sorted(chunks_with_time, key=lambda x: x["score"])
+            for chunk in sorted_by_relevance:
+                if chunk["text"] not in selected_chunks and len(selected_chunks) < 5:
+                    selected_chunks.append(chunk["text"])
+                    timestamps.append({
+                        "time": chunk["timestamp"],
+                        "formatted_time": chunk["formatted_time"],
+                        "text_preview": chunk["text_preview"]
+                    })
+                    print(f"Added chunk by relevance sorting: {chunk['text_preview'][:50]}")
+
+        if not selected_chunks:
+            return jsonify({"error": "Could not find relevant content for this question"}), 404
+            
+        print(f"Selected {len(selected_chunks)} chunks for context")
+
+        # Combine chunks with paragraph breaks for better readability
+        context = "\n\n".join(selected_chunks)
+        
+        # Format prompt using the template
+        prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
+
+        print(f"Sending prompt to Ollama: {prompt[:200]}...")  # Print first 200 chars of prompt
+
+        # Query Ollama with error handling
+        start_time = time.time()
+        try:
+            response = ollama.chat(
+                model=model_name, 
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            # Extract relevant data from ChatResponse object
+            response_data = {
+                "model": getattr(response, "model", model_name),
+                "created_at": getattr(response, "created_at", None),
+                "eval_duration": getattr(response, "eval_duration", None),
+                "message": {
+                    "role": response.message.role if hasattr(response.message, "role") else "assistant",
+                    "content": response.message.content if hasattr(response.message, "content") else None
+                }
+            }
+            
+            print(f"Ollama response data: {json.dumps(response_data, indent=2)}")
+            
+            # Validate response content
+            if not response.message or not hasattr(response.message, "content"):
+                raise ValueError("Response missing content")
+                
+            answer_text = response.message.content
+            if not answer_text:
+                raise ValueError("Empty answer content")
+                
+            end_time = time.time()
+            
+            return jsonify({
+                "answer": answer_text,
+                "timestamps": timestamps,
+                "time_taken": round(end_time - start_time, 2)
+            })
+            
+        except Exception as e:
+            print(f"Error in Ollama chat: {str(e)}")
+            if 'response' in locals():
+                print(f"Response content: {getattr(response.message, 'content', 'No content available')}")
+            raise ValueError(f"Failed to get valid response from Ollama: {str(e)}")
+            
     except Exception as e:
+        print(f"Error in ask_question: {str(e)}")
+        print(f"Full error details: {traceback.format_exc()}")
         return jsonify({"error": f"Error generating response: {str(e)}"}), 500
 
 @app.route("/summarize", methods=["POST"])
@@ -770,8 +1012,59 @@ def summarize_video():
         return jsonify({
             "error": f"Model '{model_name}' not found in Ollama. Please run 'ollama pull {model_name}' first."
         }), 400
+    
+    # First check if we already have a cached summary
+    try:
+        cached_results = collection.get(
+            where={"video_id": video_id, "type": "summary"},
+            include=["documents", "metadatas"]
+        )
+        
+        if cached_results["documents"] and len(cached_results["documents"]) > 0:
+            # Return cached summary
+            print(f"Returning cached summary for video {video_id}")
+            
+            # Get video title from metadata
+            video_title = cached_results["metadatas"][0]["title"] if cached_results["metadatas"] else f"Video {video_id}"
+            
+            # Get timestamp when summary was created
+            created_at = cached_results["metadatas"][0].get("created_at", "unknown time")
+            
+            return jsonify({
+                "title": video_title,
+                "summary": cached_results["documents"][0],
+                "cached": True,
+                "created_at": created_at
+            })
+    except Exception as e:
+        print(f"Error checking for cached summary: {str(e)}")
+        # Continue with generating a new summary
 
-    # Query database for all chunks
+    # Get all chunks for this video
+    all_chunks = collection.get(
+        where={"video_id": video_id},
+        include=["metadatas", "documents"]
+    )
+    
+    if not all_chunks["documents"]:
+        return jsonify({"error": "No content found for this video ID"}), 404
+        
+    # Filter out summaries manually
+    transcript_docs = []
+    transcript_metadatas = []
+    
+    for i, metadata in enumerate(all_chunks["metadatas"]):
+        if metadata.get("type") != "summary":
+            transcript_docs.append(all_chunks["documents"][i])
+            transcript_metadatas.append(metadata)
+    
+    if not transcript_docs:
+        return jsonify({"error": "No transcript chunks found for this video"}), 404
+        
+    # Get video title from any transcript chunk
+    video_title = transcript_metadatas[0]["title"] if transcript_metadatas else f"Video {video_id}"
+    
+    # Query database for relevant chunks for summary
     results = collection.query(
         query_texts=["What is this video about?"],  # General query to get relevant chunks
         where={"video_id": video_id},
@@ -780,24 +1073,28 @@ def summarize_video():
     )
 
     if not results["documents"] or len(results["documents"][0]) == 0:
-        return jsonify({"error": "No content found for this video ID"}), 404
-
-    # Get video title
-    video_title = results["metadatas"][0][0]["title"] if results["metadatas"] and results["metadatas"][0] else f"Video {video_id}"
+        return jsonify({"error": "No relevant content found for this video ID"}), 404
+        
+    # Filter out any summaries from the query results
+    summary_chunks = []
     
-    # Get representative chunks for summary (first, middle, and last parts)
-    chunks = results["documents"][0]
+    for i, metadata in enumerate(results["metadatas"][0]):
+        if metadata.get("type") != "summary":
+            summary_chunks.append(results["documents"][0][i])
+    
+    if not summary_chunks:
+        return jsonify({"error": "No transcript chunks available for summarization"}), 404
     
     # If too many chunks, select representative ones
-    selected_chunks = chunks
-    if len(chunks) > 5:
+    selected_chunks = summary_chunks
+    if len(summary_chunks) > 5:
         # Take first, some from middle, and last chunk
         selected_chunks = [
-            chunks[0],
-            chunks[len(chunks)//4],
-            chunks[len(chunks)//2],
-            chunks[3*len(chunks)//4],
-            chunks[-1]
+            summary_chunks[0],
+            summary_chunks[len(summary_chunks)//4],
+            summary_chunks[len(summary_chunks)//2],
+            summary_chunks[3*len(summary_chunks)//4],
+            summary_chunks[-1]
         ]
     
     context = "\n\n".join(selected_chunks)
@@ -806,7 +1103,7 @@ def summarize_video():
     prompt = SUMMARY_PROMPT_TEMPLATE.format(title=video_title, context=context)
 
     try:
-        # Generate summary with Ollama (using environment variable)
+        # Generate summary with Ollama
         start_time = time.time()
         response = ollama.chat(
             model=model_name, 
@@ -814,12 +1111,40 @@ def summarize_video():
         )
         end_time = time.time()
         
+        # Get summary text from the response
+        if not response.message or not hasattr(response.message, "content"):
+            raise ValueError("Response missing content")
+            
+        summary_text = response.message.content
+        if not summary_text:
+            raise ValueError("Empty summary content")
+        
+        # Store the summary in the collection for future use
+        try:
+            timestamp = datetime.now().isoformat()
+            collection.upsert(
+                ids=[f"{video_id}_summary"],
+                metadatas=[{
+                    "video_id": video_id,
+                    "title": video_title,
+                    "type": "summary",
+                    "created_at": timestamp
+                }],
+                documents=[summary_text]
+            )
+            print(f"Cached summary for video {video_id}")
+        except Exception as e:
+            print(f"Error caching summary: {str(e)}")
+        
         return jsonify({
             "title": video_title,
-            "summary": response["message"]["content"],
+            "summary": summary_text,
+            "cached": False,
             "time_taken": round(end_time - start_time, 2)
         })
     except Exception as e:
+        print(f"Error in summarize_video: {str(e)}")
+        print(f"Full error details: {traceback.format_exc()}")
         return jsonify({"error": f"Error generating summary: {str(e)}"}), 500
 
 if __name__ == "__main__":

@@ -175,6 +175,9 @@
                                         <div id="summarySection" style="display: none;">
                                             <h5>Video Summary:</h5>
                                             <div id="summary" class="p-3 bg-light rounded"></div>
+                                            <div id="summaryMeta" class="text-muted mt-2 small">
+                                                <span id="summarySource" style="display: none;"><span class="badge bg-info">Cached</span> Generated on <span id="summaryTime"></span></span>
+                                            </div>
                                         </div>
                                     </div>
                                     
@@ -481,8 +484,11 @@
             // Show loading
             const summarySection = document.getElementById('summarySection');
             const summary = document.getElementById('summary');
+            const summarySource = document.getElementById('summarySource');
+            const summaryTime = document.getElementById('summaryTime');
             
             summary.innerHTML = '<p class="text-muted">Generating summary...</p>';
+            summarySource.style.display = 'none';
             summarySection.style.display = 'block';
             
             const model = modelDropdown.value;
@@ -505,6 +511,15 @@
                 }
                 
                 summary.innerHTML = data.summary;
+                
+                // Show cached status if applicable
+                if (data.cached) {
+                    summarySource.style.display = 'inline';
+                    const createdDate = new Date(data.created_at);
+                    summaryTime.textContent = createdDate.toLocaleString();
+                } else {
+                    summarySource.style.display = 'none';
+                }
             })
             .catch(error => {
                 summary.innerHTML = '<p class="text-danger">Error: ' + error.message + '</p>';
