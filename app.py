@@ -15,6 +15,8 @@ import ollama
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 import traceback
+# Import the knowledge graph builder
+from kg_builder import KnowledgeGraphBuilder
 
 # Load environment variables from .env file
 load_dotenv()
@@ -26,6 +28,12 @@ OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "30"))
 DEBUG_MODE = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
 # Streaming has been disabled to avoid connection issues
 ENABLE_STREAMING = False  # Manually disabled to avoid connection issues
+
+# Neo4j configuration (optional)
+NEO4J_URI = os.getenv("NEO4J_URI", "")
+NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+USE_KNOWLEDGE_GRAPH = os.getenv("USE_KNOWLEDGE_GRAPH", "True").lower() in ("true", "1", "t")
 
 # Set the Ollama host environment variable for the ollama client package
 if "://" in OLLAMA_HOST:
@@ -48,6 +56,22 @@ collection = chroma_client.get_or_create_collection(
 
 # Initialize Whisper model
 whisper_model = None  # Lazy loading to save memory
+
+# Initialize knowledge graph builder if enabled
+kg_builder = None
+if USE_KNOWLEDGE_GRAPH:
+    try:
+        kg_builder = KnowledgeGraphBuilder(
+            model_name=OLLAMA_MODEL,
+            neo4j_uri=NEO4J_URI if NEO4J_URI else None,
+            neo4j_username=NEO4J_USERNAME if NEO4J_USERNAME else None,
+            neo4j_password=NEO4J_PASSWORD if NEO4J_PASSWORD else None
+        )
+        print("Knowledge Graph builder initialized successfully")
+    except Exception as e:
+        print(f"Warning: Failed to initialize Knowledge Graph builder: {e}")
+        print("Will run without knowledge graph capabilities")
+        USE_KNOWLEDGE_GRAPH = False
 
 # Function to extract video ID from URL
 def extract_video_id(youtube_url):
@@ -286,6 +310,15 @@ def process_transcript_for_rag(video_id, transcript, timestamps, title, youtube_
             metadatas=metadatas,
             documents=documents
         )
+        
+        # Process for knowledge graph if enabled
+        if USE_KNOWLEDGE_GRAPH and kg_builder:
+            try:
+                print(f"Processing transcript for knowledge graph: {len(transcript)} chars")
+                kg_result = kg_builder.process_text(transcript)
+                print(f"Extracted {len(kg_result.get('entities', []))} entities and {len(kg_result.get('relationships', []))} relationships")
+            except Exception as e:
+                print(f"Error processing for knowledge graph: {e}")
         
         return True, len(chunks)
     except Exception as e:
@@ -817,6 +850,7 @@ def ask_question():
     video_id = data.get("video_id")
     question = data.get("question")
     model_name = data.get("model", OLLAMA_MODEL)
+    use_kg = data.get("use_kg", USE_KNOWLEDGE_GRAPH)  # Allow override via API
 
     if not video_id or not question:
         return jsonify({"error": "Missing parameters"}), 400
@@ -941,53 +975,62 @@ def ask_question():
         # Combine chunks with paragraph breaks for better readability
         context = "\n\n".join(selected_chunks)
         
-        # Format prompt using the template
-        prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
-
-        print(f"Sending prompt to Ollama: {prompt[:200]}...")  # Print first 200 chars of prompt
-
-        # Query Ollama with error handling
+        # Generate answer with knowledge graph if enabled, or use regular prompt if not
         start_time = time.time()
-        try:
-            response = ollama.chat(
-                model=model_name, 
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            # Extract relevant data from ChatResponse object
-            response_data = {
-                "model": getattr(response, "model", model_name),
-                "created_at": getattr(response, "created_at", None),
-                "eval_duration": getattr(response, "eval_duration", None),
-                "message": {
-                    "role": response.message.role if hasattr(response.message, "role") else "assistant",
-                    "content": response.message.content if hasattr(response.message, "content") else None
+        answer_text = ""
+        
+        if use_kg and USE_KNOWLEDGE_GRAPH and kg_builder:
+            # Use knowledge graph enhanced answer
+            print("Using knowledge graph enhanced answer")
+            answer_text = kg_builder.get_enhanced_answer(question, context, video_id)
+        else:
+            # Format regular prompt using the template
+            prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
+
+            print(f"Sending prompt to Ollama: {prompt[:200]}...")  # Print first 200 chars of prompt
+
+            # Query Ollama with error handling
+            try:
+                response = ollama.chat(
+                    model=model_name, 
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                
+                # Extract relevant data from ChatResponse object
+                response_data = {
+                    "model": getattr(response, "model", model_name),
+                    "created_at": getattr(response, "created_at", None),
+                    "eval_duration": getattr(response, "eval_duration", None),
+                    "message": {
+                        "role": response.message.role if hasattr(response.message, "role") else "assistant",
+                        "content": response.message.content if hasattr(response.message, "content") else None
+                    }
                 }
-            }
-            
-            print(f"Ollama response data: {json.dumps(response_data, indent=2)}")
-            
-            # Validate response content
-            if not response.message or not hasattr(response.message, "content"):
-                raise ValueError("Response missing content")
                 
-            answer_text = response.message.content
-            if not answer_text:
-                raise ValueError("Empty answer content")
+                print(f"Ollama response data: {json.dumps(response_data, indent=2)}")
                 
-            end_time = time.time()
-            
-            return jsonify({
-                "answer": answer_text,
-                "timestamps": timestamps,
-                "time_taken": round(end_time - start_time, 2)
-            })
-            
-        except Exception as e:
-            print(f"Error in Ollama chat: {str(e)}")
-            if 'response' in locals():
-                print(f"Response content: {getattr(response.message, 'content', 'No content available')}")
-            raise ValueError(f"Failed to get valid response from Ollama: {str(e)}")
+                # Validate response content
+                if not response.message or not hasattr(response.message, "content"):
+                    raise ValueError("Response missing content")
+                    
+                answer_text = response.message.content
+                if not answer_text:
+                    raise ValueError("Empty answer content")
+            except Exception as e:
+                print(f"Error in Ollama chat: {str(e)}")
+                if 'response' in locals():
+                    print(f"Response content: {getattr(response.message, 'content', 'No content available')}")
+                raise ValueError(f"Failed to get valid response from Ollama: {str(e)}")
+        
+        end_time = time.time()
+        
+        # Return answer with timestamps for UI
+        return jsonify({
+            "answer": answer_text,
+            "timestamps": timestamps,
+            "time_taken": round(end_time - start_time, 2),
+            "using_kg": use_kg and USE_KNOWLEDGE_GRAPH and kg_builder is not None
+        })
             
     except Exception as e:
         print(f"Error in ask_question: {str(e)}")
@@ -1146,6 +1189,103 @@ def summarize_video():
         print(f"Error in summarize_video: {str(e)}")
         print(f"Full error details: {traceback.format_exc()}")
         return jsonify({"error": f"Error generating summary: {str(e)}"}), 500
+
+@app.route("/kg_info", methods=["GET"])
+def get_kg_info():
+    """Endpoint to get knowledge graph status and statistics"""
+    if not USE_KNOWLEDGE_GRAPH or not kg_builder:
+        return jsonify({
+            "enabled": False,
+            "reason": "Knowledge graph is not enabled or failed to initialize"
+        })
+    
+    # Get statistics
+    stats = {
+        "enabled": True,
+        "using_neo4j": kg_builder.use_neo4j,
+        "stats": {}
+    }
+    
+    # Add in-memory stats if applicable
+    if not kg_builder.use_neo4j:
+        stats["stats"]["entity_count"] = len(kg_builder.in_memory_graph["entities"])
+        stats["stats"]["relationship_count"] = len(kg_builder.in_memory_graph["relationships"])
+    else:
+        # Get Neo4j stats
+        try:
+            entity_count = kg_builder.graph.query("MATCH (n) RETURN count(n) as count")
+            relationship_count = kg_builder.graph.query("MATCH ()-[r]->() RETURN count(r) as count")
+            
+            stats["stats"]["entity_count"] = entity_count[0]["count"] if entity_count else 0
+            stats["stats"]["relationship_count"] = relationship_count[0]["count"] if relationship_count else 0
+        except Exception as e:
+            stats["stats"]["error"] = str(e)
+    
+    return jsonify(stats)
+
+@app.route("/kg_entities", methods=["GET"])
+def get_kg_entities():
+    """Endpoint to get knowledge graph entities for a video"""
+    video_id = request.args.get("video_id")
+    
+    if not video_id:
+        return jsonify({"error": "Missing video_id parameter"}), 400
+        
+    if not USE_KNOWLEDGE_GRAPH or not kg_builder:
+        return jsonify({
+            "enabled": False,
+            "message": "Knowledge graph is not enabled or failed to initialize"
+        })
+    
+    # Get entities and relationships for the video
+    if kg_builder.use_neo4j:
+        try:
+            # Use Neo4j to query by video ID (requires metadata tagging during extraction)
+            return jsonify({"error": "Neo4j entity querying by video ID not yet implemented"}), 501
+        except Exception as e:
+            return jsonify({"error": f"Error querying Neo4j: {str(e)}"}), 500
+    else:
+        # Just return the entire in-memory graph for now
+        # In a real implementation, we would tag entities with video_id during extraction
+        return jsonify({
+            "entities": list(kg_builder.in_memory_graph["entities"].values()),
+            "relationships": kg_builder.in_memory_graph["relationships"]
+        })
+
+@app.route("/delete_video", methods=["POST"])
+def delete_video():
+    """Endpoint to delete a processed video and all its data"""
+    data = request.json
+    video_id = data.get("video_id")
+    
+    if not video_id:
+        return jsonify({"error": "Missing video_id parameter"}), 400
+    
+    try:
+        # Delete all chunks for this video
+        collection.delete(
+            where={"video_id": video_id}
+        )
+        
+        # Delete knowledge graph data if enabled
+        if USE_KNOWLEDGE_GRAPH and kg_builder:
+            try:
+                if kg_builder.use_neo4j:
+                    # In Neo4j, we would need to tag entities with video_id
+                    # This is a placeholder - in a real implementation, you would delete
+                    # all entities and relationships tagged with this video_id
+                    pass
+                else:
+                    # For in-memory, since we don't have tagging yet, we won't delete KG data
+                    # This would need to be implemented with proper tagging
+                    pass
+            except Exception as e:
+                print(f"Warning: Could not delete knowledge graph data: {e}")
+        
+        return jsonify({"success": True, "message": f"Video {video_id} deleted successfully"})
+    except Exception as e:
+        print(f"Error deleting video: {str(e)}")
+        return jsonify({"error": f"Failed to delete video: {str(e)}"}), 500
 
 if __name__ == "__main__":
     if DEBUG_MODE:

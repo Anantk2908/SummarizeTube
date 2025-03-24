@@ -1,71 +1,114 @@
-# YouTube RAG with Ollama
+# YouTube RAG - Enhanced with Knowledge Graphs
 
-A web application that processes YouTube videos, extracts transcripts, and uses Ollama LLMs for question-answering and summarization.
+A Retrieval-Augmented Generation (RAG) application for YouTube videos with LangGraph-powered knowledge graph integration.
 
 ## Features
 
-- Extract transcripts with timestamps from YouTube videos using YouTube's API or Whisper
-- Ask questions about video content using RAG with timestamp references
-- Generate summaries of video content
-- Support for multiple Ollama models
+- Process YouTube videos to extract transcripts (using YouTube API or Whisper speech-to-text)
+- Create semantic search indexes for video content
+- Ask questions about video content with precise timestamp references
+- Generate summaries of videos
+- **NEW:** Build knowledge graphs from video content for enhanced understanding
+- **NEW:** Use structured knowledge to provide more accurate and contextual answers
 
-## Prerequisites
+## Knowledge Graph Features
 
-- Python 3.7+
-- [Ollama](https://ollama.ai/) installed and running
-- A model pulled into Ollama (default: llama3)
+The application now includes a LangGraph-powered knowledge graph builder that:
 
-## Setup
+1. Extracts entities (people, concepts, products, organizations) from video transcripts
+2. Identifies relationships between these entities
+3. Stores this structured information in either:
+   - Neo4j graph database (recommended for production)
+   - In-memory graph (for simple deployments)
+4. Uses this knowledge graph to enhance RAG responses
 
-1. **Create and activate a virtual environment**:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # Linux/macOS
-   venv\Scripts\activate     # Windows
+When enabled, the knowledge graph:
+- Provides structured understanding of video content
+- Helps identify key concepts and their relationships
+- Improves answer accuracy by incorporating structured knowledge
+- Enables more contextual responses
+
+## Requirements
+
+- Python 3.8+
+- Ollama for local LLM inference
+- FFmpeg for audio processing (when using Whisper)
+- Optional: Neo4j database (for scalable knowledge graph storage)
+
+## Installation
+
+1. Clone this repository
+2. Install dependencies:
    ```
-
-2. **Install requirements**:
-   ```bash
    pip install -r requirements.txt
    ```
-
-3. **Run the application**:
-   ```bash
+3. Start Ollama on your system (see https://ollama.ai)
+4. Pull a model in Ollama:
+   ```
+   ollama pull llama3
+   ```
+5. Copy `.env.example` to `.env` and configure as needed
+6. Start the application:
+   ```
    python app.py
    ```
 
-4. **Access the application**: [http://localhost:5000](http://localhost:5000)
-
-## Usage
-
-1. Ensure Ollama is running
-2. Enter a YouTube URL
-3. Process the video to extract the transcript
-4. Ask questions or generate a summary
-
 ## Configuration
 
-Create a `.env` file with:
+Key configuration options in the `.env` file:
+
 ```
+# Ollama configuration
 OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=llama3.2
+OLLAMA_MODEL=llama3
 OLLAMA_TIMEOUT=30
-DEBUG=False
+
+# Knowledge Graph configuration
+USE_KNOWLEDGE_GRAPH=True
+# For Neo4j (optional)
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=password
 ```
-
-## How It Works
-
-1. **Transcript Extraction**: Uses YouTube API or Whisper for transcription
-2. **RAG Processing**: Chunks transcript, maintains timestamps, stores in ChromaDB
-3. **Question Answering**: Finds relevant chunks, retrieves timestamps, generates answers
-4. **Summarization**: Selects representative chunks for summarization
 
 ## API Endpoints
 
-- `POST /process_video`: Process a YouTube video
-- `POST /ask`: Ask a question
-- `POST /summarize`: Generate a summary
-- `GET /get_available_models`: List available models
-- `GET /get_processed_videos`: List processed videos
-- `GET /debug`: Connection status
-- `GET /config`: Current configuration
+### Core Endpoints
+
+- `POST /process_video` - Process a YouTube video
+- `POST /ask` - Ask a question about a video
+- `POST /summarize` - Generate a summary of a video
+- `GET /get_processed_videos` - List all processed videos
+
+### Knowledge Graph Endpoints
+
+- `GET /kg_info` - Get knowledge graph statistics
+- `GET /kg_entities` - Get entities and relationships for a video
+
+## How Knowledge Graphs Enhance RAG
+
+1. **Traditional RAG** uses embeddings to find similar chunks of text, but often struggles with:
+   - Understanding relationships between concepts
+   - Following complex reasoning chains
+   - Providing structured answers
+
+2. **Knowledge Graph Enhanced RAG** adds structured understanding by:
+   - Identifying key entities in the content
+   - Mapping relationships between these entities
+   - Using this structured data to enhance responses
+
+For example, when asked about a complex topic from a video, the system can:
+- Retrieve relevant text chunks (traditional RAG)
+- Enhance the answer with relevant entity relationships from the knowledge graph
+- Provide more accurate and structured responses
+
+## Future Improvements
+
+- Visualization of knowledge graphs in the UI
+- Entity linking across multiple videos
+- Advanced reasoning with multi-hop queries
+- Temporal analysis of changing relationships over time
+
+## License
+
+MIT
