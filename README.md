@@ -109,6 +109,3 @@ For example, when asked about a complex topic from a video, the system can:
 - Advanced reasoning with multi-hop queries
 - Temporal analysis of changing relationships over time
 
-## License
-
-MIT
