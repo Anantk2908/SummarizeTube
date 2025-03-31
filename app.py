@@ -15,8 +15,6 @@ import ollama
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 import traceback
-# Import the knowledge graph builder
-from kg_builder import KnowledgeGraphBuilder
 
 # Load environment variables from .env file
 load_dotenv()
@@ -26,14 +24,8 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "30"))
 DEBUG_MODE = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
-# Streaming has been disabled to avoid connection issues
-ENABLE_STREAMING = False  # Manually disabled to avoid connection issues
-
-# Neo4j configuration (optional)
-NEO4J_URI = os.getenv("NEO4J_URI", "")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
-USE_KNOWLEDGE_GRAPH = os.getenv("USE_KNOWLEDGE_GRAPH", "True").lower() in ("true", "1", "t")
+# Streaming has been removed
+ENABLE_STREAMING = False
 
 # Set the Ollama host environment variable for the ollama client package
 if "://" in OLLAMA_HOST:
@@ -56,22 +48,6 @@ collection = chroma_client.get_or_create_collection(
 
 # Initialize Whisper model
 whisper_model = None  # Lazy loading to save memory
-
-# Initialize knowledge graph builder if enabled
-kg_builder = None
-if USE_KNOWLEDGE_GRAPH:
-    try:
-        kg_builder = KnowledgeGraphBuilder(
-            model_name=OLLAMA_MODEL,
-            neo4j_uri=NEO4J_URI if NEO4J_URI else None,
-            neo4j_username=NEO4J_USERNAME if NEO4J_USERNAME else None,
-            neo4j_password=NEO4J_PASSWORD if NEO4J_PASSWORD else None
-        )
-        print("Knowledge Graph builder initialized successfully")
-    except Exception as e:
-        print(f"Warning: Failed to initialize Knowledge Graph builder: {e}")
-        print("Will run without knowledge graph capabilities")
-        USE_KNOWLEDGE_GRAPH = False
 
 # Function to extract video ID from URL
 def extract_video_id(youtube_url):
@@ -195,6 +171,17 @@ def format_time(seconds):
     secs = int(seconds % 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
+# Function to get the current timestamp in different formats
+def get_current_timestamp():
+    now = datetime.now()
+    return {
+        "iso": now.isoformat(),
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "unix": int(now.timestamp())
+    }
+
 # Function to download and transcribe audio
 def transcribe_video(video_id):
     global whisper_model
@@ -310,15 +297,6 @@ def process_transcript_for_rag(video_id, transcript, timestamps, title, youtube_
             metadatas=metadatas,
             documents=documents
         )
-        
-        # Process for knowledge graph if enabled
-        if USE_KNOWLEDGE_GRAPH and kg_builder:
-            try:
-                print(f"Processing transcript for knowledge graph: {len(transcript)} chars")
-                kg_result = kg_builder.process_text(transcript)
-                print(f"Extracted {len(kg_result.get('entities', []))} entities and {len(kg_result.get('relationships', []))} relationships")
-            except Exception as e:
-                print(f"Error processing for knowledge graph: {e}")
         
         return True, len(chunks)
     except Exception as e:
@@ -475,6 +453,11 @@ Your task is to answer questions about the video using ONLY the provided transcr
 9. If the answer requires combining information from multiple segments, ensure logical connection
 10. For questions about motorcycle features, check for discussions about specifications, comparisons, or riding experience
 
+SPECIAL INSTRUCTION FOR TIME REFERENCES:
+When referring to a specific moment in the video in your answer, ALWAYS format it as [HH:MM:SS] (e.g., [01:24:30]).
+This exact format is crucial as it will be automatically detected and converted to clickable links for viewers.
+Examples of proper time formatting: [00:05:10], [01:15:25], [02:30:45]
+
 TRANSCRIPT SEGMENTS:
 {context}
 
@@ -482,367 +465,27 @@ QUESTION: {question}
 
 ANSWER:"""
 
-SUMMARY_PROMPT_TEMPLATE = """You are an expert content analyst creating high-quality video summaries.
+SUMMARY_PROMPT_TEMPLATE = """You are a highly skilled AI assistant specializing in creating summaries of video content.
 
-Create a comprehensive summary of the YouTube video titled "{title}". Follow these guidelines:
+Your task is to create a concise but comprehensive summary of a YouTube video based on the transcript segments provided below.
 
-1. Structure the summary in 1-2 clear paragraphs
-2. Begin with the main topic or purpose of the video
-3. Highlight key points in order of importance
-4. Include specific details, numbers, or examples when available
-5. Maintain any technical terminology used in the video
-6. If the content is instructional, outline the main steps or concepts
-7. If it's a discussion, capture the main arguments or viewpoints
-8. End with the video's conclusion or key takeaway
-9. Use clear, professional language
-10. Do NOT mention that this is based on transcript excerpts
+GUIDELINES:
 
-TRANSCRIPT EXCERPTS:
+1. Focus on the main topics, key points, and important details
+2. Maintain chronological order of topics discussed
+3. Include any significant conclusions or insights from the video
+4. Keep the summary concise but informative
+5. Highlight any particularly useful or unique information
+6. Don't include your personal opinions or information not present in the transcript
+7. Format the summary in easy-to-read paragraphs
+8. Use objective, clear language
+
+VIDEO TITLE: {title}
+
+TRANSCRIPT SEGMENTS:
 {context}
 
 SUMMARY:"""
-
-# Function to stream response from Ollama API directly
-def stream_ollama_response(model_name, prompt):
-    # Create a direct request to Ollama API for streaming
-    payload = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": True
-    }
-    
-    # Get host from environment variable without the protocol
-    host = OLLAMA_HOST
-    
-    try:
-        with requests.post(f"{host}/api/chat", json=payload, stream=True, timeout=OLLAMA_TIMEOUT) as response:
-            if response.status_code != 200:
-                yield f"data: {json.dumps({'error': 'Error connecting to Ollama API'})}\n\n"
-                return
-                
-            # Initial variables
-            full_response = ""
-            
-            # Stream each chunk as it arrives
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                    
-                try:
-                    json_chunk = json.loads(line)
-                    
-                    # Extract the delta text from the chunk
-                    if 'message' in json_chunk and 'content' in json_chunk['message']:
-                        chunk_text = json_chunk['message']['content']
-                        full_response += chunk_text
-                        
-                        yield f"data: {json.dumps({'content': chunk_text, 'done': False})}\n\n"
-                        
-                    # Check if we're done
-                    if json_chunk.get('done', False):
-                        yield f"data: {json.dumps({'content': '', 'done': True, 'full_response': full_response})}\n\n"
-                        break
-                        
-                except json.JSONDecodeError:
-                    # Skip any malformed lines
-                    continue
-    except Exception as e:
-        if DEBUG_MODE:
-            print(f"Error in streaming: {str(e)}")
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-@app.route("/ask_stream", methods=["POST"])
-def ask_question_stream():
-    """Streaming version of ask_question endpoint"""
-    if not ENABLE_STREAMING:
-        return jsonify({"error": "Streaming is disabled"}), 400
-        
-    data = request.json
-    video_id = data.get("video_id")
-    question = data.get("question")
-    model_name = data.get("model", OLLAMA_MODEL)
-
-    if not video_id or not question:
-        return jsonify({"error": "Missing parameters"}), 400
-    
-    # Check for Ollama
-    if not check_ollama_available():
-        return jsonify({"error": f"Ollama is not running at {OLLAMA_HOST}. Please start Ollama server."}), 500
-    
-    # Check if model is available
-    if not check_model_available(model_name):
-        return jsonify({
-            "error": f"Model '{model_name}' not found in Ollama. Please run 'ollama pull {model_name}' first."
-        }), 400
-
-    # Query database for relevant chunks
-    results = collection.query(
-        query_texts=[question], 
-        where={"video_id": video_id},
-        n_results=5,
-        include=["metadatas", "documents"]
-    )
-
-    if not results["documents"] or len(results["documents"][0]) == 0:
-        return jsonify({"error": "No content found for this video ID"}), 404
-
-    # Prepare context from retrieved chunks
-    retrieved_chunks = results["documents"][0]
-    context = "\n\n".join(retrieved_chunks)
-    
-    # Get timestamps
-    timestamps = []
-    for metadata in results["metadatas"][0]:
-        timestamps.append({
-            "time": metadata["timestamp"],
-            "formatted_time": metadata["formatted_time"],
-            "text_preview": metadata["text_preview"]
-        })
-    
-    # Format prompt using the template
-    prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
-
-    # Set response headers for SSE
-    def generate():
-        # First yield the timestamps so frontend has them right away
-        yield f"data: {json.dumps({'timestamps': timestamps, 'type': 'timestamps'})}\n\n"
-        
-        # Then yield the content as it streams
-        yield from stream_ollama_response(model_name, prompt)
-    
-    return Response(stream_with_context(generate()), 
-                   mimetype='text/event-stream',
-                   headers={'Cache-Control': 'no-cache', 
-                            'X-Accel-Buffering': 'no'})
-
-@app.route("/summarize_stream", methods=["POST"])
-def summarize_video_stream():
-    """Streaming version of summarize endpoint"""
-    if not ENABLE_STREAMING:
-        return jsonify({"error": "Streaming is disabled"}), 400
-        
-    data = request.json
-    video_id = data.get("video_id")
-    model_name = data.get("model", OLLAMA_MODEL)
-
-    if not video_id:
-        return jsonify({"error": "Missing video_id"}), 400
-    
-    # Check for Ollama
-    if not check_ollama_available():
-        return jsonify({"error": f"Ollama is not running at {OLLAMA_HOST}. Please start Ollama server."}), 500
-    
-    # Check if model is available
-    if not check_model_available(model_name):
-        return jsonify({
-            "error": f"Model '{model_name}' not found in Ollama. Please run 'ollama pull {model_name}' first."
-        }), 400
-
-    # First check if we already have a cached summary
-    try:
-        cached_results = collection.get(
-            where={"video_id": video_id, "type": "summary"},
-            include=["documents", "metadatas"]
-        )
-        
-        if cached_results["documents"] and len(cached_results["documents"]) > 0:
-            # Return cached summary as a stream event
-            print(f"Returning cached summary for video {video_id}")
-            
-            # Get video title from metadata
-            video_title = cached_results["metadatas"][0]["title"] if cached_results["metadatas"] else f"Video {video_id}"
-            summary_text = cached_results["documents"][0]
-            created_at = cached_results["metadatas"][0].get("created_at", "unknown time")
-            
-            # Set response headers for SSE
-            def generate_cached():
-                # First yield the title
-                yield f"data: {json.dumps({'title': video_title, 'type': 'title'})}\n\n"
-                
-                # Then yield the cached content
-                yield f"data: {json.dumps({'content': summary_text, 'cached': True, 'created_at': created_at})}\n\n"
-                
-                # Signal completion
-                yield f"data: {json.dumps({'content': '', 'done': True, 'full_response': summary_text})}\n\n"
-            
-            return Response(stream_with_context(generate_cached()), 
-                           mimetype='text/event-stream',
-                           headers={'Cache-Control': 'no-cache', 
-                                   'X-Accel-Buffering': 'no'})
-    except Exception as e:
-        print(f"Error checking for cached summary: {str(e)}")
-        # Continue with generating a new summary
-
-    # Query database for all chunks
-    results = collection.query(
-        query_texts=["What is this video about?"],  # General query to get relevant chunks
-        where={"video_id": video_id},
-        n_results=10,
-        include=["metadatas", "documents"]
-    )
-
-    if not results["documents"] or len(results["documents"][0]) == 0:
-        return jsonify({"error": "No content found for this video ID"}), 404
-
-    # Get video title
-    video_title = results["metadatas"][0][0]["title"] if results["metadatas"] and results["metadatas"][0] else f"Video {video_id}"
-    
-    # Get representative chunks for summary (first, middle, and last parts)
-    chunks = results["documents"][0]
-    
-    # If too many chunks, select representative ones
-    selected_chunks = chunks
-    if len(chunks) > 5:
-        # Take first, some from middle, and last chunk
-        selected_chunks = [
-            chunks[0],
-            chunks[len(chunks)//4],
-            chunks[len(chunks)//2],
-            chunks[3*len(chunks)//4],
-            chunks[-1]
-        ]
-    
-    context = "\n\n".join(selected_chunks)
-    
-    # Format summary prompt using the template
-    prompt = SUMMARY_PROMPT_TEMPLATE.format(title=video_title, context=context)
-
-    # Set response headers for SSE
-    def generate():
-        # First yield the title so frontend has it right away
-        yield f"data: {json.dumps({'title': video_title, 'type': 'title'})}\n\n"
-        
-        # Store for saving the complete summary
-        full_summary = ""
-        
-        # Stream each chunk as it arrives
-        for chunk in stream_ollama_response(model_name, prompt):
-            yield chunk
-            
-            # Extract content from chunk to build full summary
-            try:
-                chunk_data = json.loads(chunk.replace('data: ', ''))
-                if 'content' in chunk_data and chunk_data['content']:
-                    full_summary += chunk_data['content']
-                
-                # If this is the final chunk, save the summary
-                if chunk_data.get('done', False) and full_summary:
-                    try:
-                        timestamp = datetime.now().isoformat()
-                        collection.upsert(
-                            ids=[f"{video_id}_summary"],
-                            metadatas=[{
-                                "video_id": video_id,
-                                "title": video_title,
-                                "type": "summary",
-                                "created_at": timestamp
-                            }],
-                            documents=[full_summary]
-                        )
-                        print(f"Cached summary for video {video_id}")
-                    except Exception as e:
-                        print(f"Error caching summary: {str(e)}")
-            except:
-                pass  # Skip any parsing errors
-    
-    return Response(stream_with_context(generate()), 
-                   mimetype='text/event-stream',
-                   headers={'Cache-Control': 'no-cache', 
-                            'X-Accel-Buffering': 'no'})
-
-@app.route("/get_available_models", methods=["GET"])
-def get_available_models():
-    try:
-        response = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=OLLAMA_TIMEOUT)
-        if response.status_code == 200:
-            models = response.json().get("models", [])
-            model_names = [model["name"] for model in models]
-            return jsonify({"models": model_names, "default_model": OLLAMA_MODEL})
-        return jsonify({"error": "Failed to get models", "models": [OLLAMA_MODEL], "default_model": OLLAMA_MODEL}), 200
-    except Exception as e:
-        print(f"Error getting models: {str(e)}")
-        return jsonify({"error": f"Ollama not available at {OLLAMA_HOST}", "models": [OLLAMA_MODEL], "default_model": OLLAMA_MODEL}), 200
-
-@app.route("/get_processed_videos", methods=["GET"])
-def get_processed_videos():
-    try:
-        # Query for unique video IDs
-        all_metadatas = collection.get()["metadatas"]
-        processed_videos = {}
-        
-        for metadata in all_metadatas:
-            if "video_id" in metadata and "title" in metadata and "url" in metadata:
-                video_id = metadata["video_id"]
-                if video_id not in processed_videos:
-                    processed_videos[video_id] = {
-                        "id": video_id,
-                        "title": metadata["title"],
-                        "url": metadata["url"]
-                    }
-        
-        return jsonify({"videos": list(processed_videos.values())})
-    except Exception as e:
-        return jsonify({"error": f"Error fetching videos: {str(e)}"}), 500
-
-@app.route("/config", methods=["GET"])
-def get_config():
-    """Endpoint to retrieve current configuration (except sensitive data)"""
-    return jsonify({
-        "ollama_host": OLLAMA_HOST,
-        "default_model": OLLAMA_MODEL,
-        "debug_mode": DEBUG_MODE,
-        "timeout": OLLAMA_TIMEOUT
-    })
-
-@app.route("/get_chunks", methods=["GET"])
-def get_chunks():
-    """Endpoint to retrieve all chunks for a specific video"""
-    video_id = request.args.get("video_id")
-    
-    if not video_id:
-        return jsonify({"error": "Missing video_id parameter"}), 400
-    
-    try:
-        # Get all chunks for this video
-        all_chunks = collection.get(
-            where={"video_id": video_id},
-            include=["metadatas", "documents"]
-        )
-        
-        if not all_chunks["documents"]:
-            return jsonify({"error": "No chunks found for this video ID"}), 404
-        
-        # Prepare response with chunks and their metadata, filtering out summaries
-        chunks = []
-        for i, doc in enumerate(all_chunks["documents"]):
-            if i < len(all_chunks["metadatas"]):
-                metadata = all_chunks["metadatas"][i]
-                # Only include if it's not a summary document
-                if metadata.get("type") != "summary":
-                    chunks.append({
-                        "id": len(chunks),  # Use new index for filtered list
-                        "text": doc,
-                        "timestamp": metadata.get("timestamp", 0),
-                        "formatted_time": metadata.get("formatted_time", "00:00:00"),
-                        "metadata": metadata
-                    })
-        
-        if not chunks:
-            return jsonify({"error": "No transcript chunks found for this video"}), 404
-            
-        # Sort chunks by timestamp
-        chunks.sort(key=lambda x: x["timestamp"])
-        
-        return jsonify({
-            "video_id": video_id,
-            "chunks": chunks,
-            "count": len(chunks)
-        })
-        
-    except Exception as e:
-        print(f"Error retrieving chunks: {str(e)}")
-        print(traceback.format_exc())
-        return jsonify({"error": f"Error retrieving chunks: {str(e)}"}), 500
 
 @app.route("/ask", methods=["POST"])
 def ask_question():
@@ -850,10 +493,24 @@ def ask_question():
     video_id = data.get("video_id")
     question = data.get("question")
     model_name = data.get("model", OLLAMA_MODEL)
-    use_kg = data.get("use_kg", USE_KNOWLEDGE_GRAPH)  # Allow override via API
 
     if not video_id or not question:
         return jsonify({"error": "Missing parameters"}), 400
+    
+    # Check if the user is asking for the current time/timestamp
+    time_keywords = ["what time is it", "what's the time", "current time", "what is the time", 
+                    "timestamp", "current timestamp", "what date is it", "what's the date", 
+                    "current date", "what is the date"]
+    
+    if any(keyword in question.lower() for keyword in time_keywords):
+        timestamp_data = get_current_timestamp()
+        answer_text = f"The current time is {timestamp_data['time']} on {timestamp_data['date']}."
+        return jsonify({
+            "answer": answer_text,
+            "timestamps": [],
+            "time_taken": 0,
+            "timestamp_data": timestamp_data
+        })
     
     # Check for Ollama
     if not check_ollama_available():
@@ -975,52 +632,46 @@ def ask_question():
         # Combine chunks with paragraph breaks for better readability
         context = "\n\n".join(selected_chunks)
         
-        # Generate answer with knowledge graph if enabled, or use regular prompt if not
+        # Generate answer
         start_time = time.time()
-        answer_text = ""
         
-        if use_kg and USE_KNOWLEDGE_GRAPH and kg_builder:
-            # Use knowledge graph enhanced answer
-            print("Using knowledge graph enhanced answer")
-            answer_text = kg_builder.get_enhanced_answer(question, context, video_id)
-        else:
-            # Format regular prompt using the template
-            prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
+        # Format prompt using the template
+        prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
 
-            print(f"Sending prompt to Ollama: {prompt[:200]}...")  # Print first 200 chars of prompt
+        print(f"Sending prompt to Ollama: {prompt[:200]}...")  # Print first 200 chars of prompt
 
-            # Query Ollama with error handling
-            try:
-                response = ollama.chat(
-                    model=model_name, 
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                
-                # Extract relevant data from ChatResponse object
-                response_data = {
-                    "model": getattr(response, "model", model_name),
-                    "created_at": getattr(response, "created_at", None),
-                    "eval_duration": getattr(response, "eval_duration", None),
-                    "message": {
-                        "role": response.message.role if hasattr(response.message, "role") else "assistant",
-                        "content": response.message.content if hasattr(response.message, "content") else None
-                    }
+        # Query Ollama with error handling
+        try:
+            response = ollama.chat(
+                model=model_name, 
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            # Extract relevant data from ChatResponse object
+            response_data = {
+                "model": getattr(response, "model", model_name),
+                "created_at": getattr(response, "created_at", None),
+                "eval_duration": getattr(response, "eval_duration", None),
+                "message": {
+                    "role": response.message.role if hasattr(response.message, "role") else "assistant",
+                    "content": response.message.content if hasattr(response.message, "content") else None
                 }
+            }
+            
+            print(f"Ollama response data: {json.dumps(response_data, indent=2)}")
+            
+            # Validate response content
+            if not response.message or not hasattr(response.message, "content"):
+                raise ValueError("Response missing content")
                 
-                print(f"Ollama response data: {json.dumps(response_data, indent=2)}")
-                
-                # Validate response content
-                if not response.message or not hasattr(response.message, "content"):
-                    raise ValueError("Response missing content")
-                    
-                answer_text = response.message.content
-                if not answer_text:
-                    raise ValueError("Empty answer content")
-            except Exception as e:
-                print(f"Error in Ollama chat: {str(e)}")
-                if 'response' in locals():
-                    print(f"Response content: {getattr(response.message, 'content', 'No content available')}")
-                raise ValueError(f"Failed to get valid response from Ollama: {str(e)}")
+            answer_text = response.message.content
+            if not answer_text:
+                raise ValueError("Empty answer content")
+        except Exception as e:
+            print(f"Error in Ollama chat: {str(e)}")
+            if 'response' in locals():
+                print(f"Response content: {getattr(response.message, 'content', 'No content available')}")
+            raise ValueError(f"Failed to get valid response from Ollama: {str(e)}")
         
         end_time = time.time()
         
@@ -1028,8 +679,7 @@ def ask_question():
         return jsonify({
             "answer": answer_text,
             "timestamps": timestamps,
-            "time_taken": round(end_time - start_time, 2),
-            "using_kg": use_kg and USE_KNOWLEDGE_GRAPH and kg_builder is not None
+            "time_taken": round(end_time - start_time, 2)
         })
             
     except Exception as e:
@@ -1190,67 +840,99 @@ def summarize_video():
         print(f"Full error details: {traceback.format_exc()}")
         return jsonify({"error": f"Error generating summary: {str(e)}"}), 500
 
-@app.route("/kg_info", methods=["GET"])
-def get_kg_info():
-    """Endpoint to get knowledge graph status and statistics"""
-    if not USE_KNOWLEDGE_GRAPH or not kg_builder:
-        return jsonify({
-            "enabled": False,
-            "reason": "Knowledge graph is not enabled or failed to initialize"
-        })
-    
-    # Get statistics
-    stats = {
-        "enabled": True,
-        "using_neo4j": kg_builder.use_neo4j,
-        "stats": {}
-    }
-    
-    # Add in-memory stats if applicable
-    if not kg_builder.use_neo4j:
-        stats["stats"]["entity_count"] = len(kg_builder.in_memory_graph["entities"])
-        stats["stats"]["relationship_count"] = len(kg_builder.in_memory_graph["relationships"])
-    else:
-        # Get Neo4j stats
-        try:
-            entity_count = kg_builder.graph.query("MATCH (n) RETURN count(n) as count")
-            relationship_count = kg_builder.graph.query("MATCH ()-[r]->() RETURN count(r) as count")
-            
-            stats["stats"]["entity_count"] = entity_count[0]["count"] if entity_count else 0
-            stats["stats"]["relationship_count"] = relationship_count[0]["count"] if relationship_count else 0
-        except Exception as e:
-            stats["stats"]["error"] = str(e)
-    
-    return jsonify(stats)
+@app.route("/get_available_models", methods=["GET"])
+def get_available_models():
+    try:
+        response = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=OLLAMA_TIMEOUT)
+        if response.status_code == 200:
+            models = response.json().get("models", [])
+            model_names = [model["name"] for model in models]
+            return jsonify({"models": model_names, "default_model": OLLAMA_MODEL})
+        return jsonify({"error": "Failed to get models", "models": [OLLAMA_MODEL], "default_model": OLLAMA_MODEL}), 200
+    except Exception as e:
+        print(f"Error getting models: {str(e)}")
+        return jsonify({"error": f"Ollama not available at {OLLAMA_HOST}", "models": [OLLAMA_MODEL], "default_model": OLLAMA_MODEL}), 200
 
-@app.route("/kg_entities", methods=["GET"])
-def get_kg_entities():
-    """Endpoint to get knowledge graph entities for a video"""
+@app.route("/get_processed_videos", methods=["GET"])
+def get_processed_videos():
+    try:
+        # Query for unique video IDs
+        all_metadatas = collection.get()["metadatas"]
+        processed_videos = {}
+        
+        for metadata in all_metadatas:
+            if "video_id" in metadata and "title" in metadata and "url" in metadata:
+                video_id = metadata["video_id"]
+                if video_id not in processed_videos:
+                    processed_videos[video_id] = {
+                        "id": video_id,
+                        "title": metadata["title"],
+                        "url": metadata["url"]
+                    }
+        
+        return jsonify({"videos": list(processed_videos.values())})
+    except Exception as e:
+        return jsonify({"error": f"Error fetching videos: {str(e)}"}), 500
+
+@app.route("/config", methods=["GET"])
+def get_config():
+    """Endpoint to retrieve current configuration (except sensitive data)"""
+    return jsonify({
+        "ollama_host": OLLAMA_HOST,
+        "default_model": OLLAMA_MODEL,
+        "debug_mode": DEBUG_MODE,
+        "timeout": OLLAMA_TIMEOUT
+    })
+
+@app.route("/get_chunks", methods=["GET"])
+def get_chunks():
+    """Endpoint to retrieve all chunks for a specific video"""
     video_id = request.args.get("video_id")
     
     if not video_id:
         return jsonify({"error": "Missing video_id parameter"}), 400
-        
-    if not USE_KNOWLEDGE_GRAPH or not kg_builder:
-        return jsonify({
-            "enabled": False,
-            "message": "Knowledge graph is not enabled or failed to initialize"
-        })
     
-    # Get entities and relationships for the video
-    if kg_builder.use_neo4j:
-        try:
-            # Use Neo4j to query by video ID (requires metadata tagging during extraction)
-            return jsonify({"error": "Neo4j entity querying by video ID not yet implemented"}), 501
-        except Exception as e:
-            return jsonify({"error": f"Error querying Neo4j: {str(e)}"}), 500
-    else:
-        # Just return the entire in-memory graph for now
-        # In a real implementation, we would tag entities with video_id during extraction
+    try:
+        # Get all chunks for this video
+        all_chunks = collection.get(
+            where={"video_id": video_id},
+            include=["metadatas", "documents"]
+        )
+        
+        if not all_chunks["documents"]:
+            return jsonify({"error": "No chunks found for this video ID"}), 404
+        
+        # Prepare response with chunks and their metadata, filtering out summaries
+        chunks = []
+        for i, doc in enumerate(all_chunks["documents"]):
+            if i < len(all_chunks["metadatas"]):
+                metadata = all_chunks["metadatas"][i]
+                # Only include if it's not a summary document
+                if metadata.get("type") != "summary":
+                    chunks.append({
+                        "id": len(chunks),  # Use new index for filtered list
+                        "text": doc,
+                        "timestamp": metadata.get("timestamp", 0),
+                        "formatted_time": metadata.get("formatted_time", "00:00:00"),
+                        "metadata": metadata
+                    })
+        
+        if not chunks:
+            return jsonify({"error": "No transcript chunks found for this video"}), 404
+            
+        # Sort chunks by timestamp
+        chunks.sort(key=lambda x: x["timestamp"])
+        
         return jsonify({
-            "entities": list(kg_builder.in_memory_graph["entities"].values()),
-            "relationships": kg_builder.in_memory_graph["relationships"]
+            "video_id": video_id,
+            "chunks": chunks,
+            "count": len(chunks)
         })
+        
+    except Exception as e:
+        print(f"Error retrieving chunks: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({"error": f"Error retrieving chunks: {str(e)}"}), 500
 
 @app.route("/delete_video", methods=["POST"])
 def delete_video():
@@ -1266,21 +948,6 @@ def delete_video():
         collection.delete(
             where={"video_id": video_id}
         )
-        
-        # Delete knowledge graph data if enabled
-        if USE_KNOWLEDGE_GRAPH and kg_builder:
-            try:
-                if kg_builder.use_neo4j:
-                    # In Neo4j, we would need to tag entities with video_id
-                    # This is a placeholder - in a real implementation, you would delete
-                    # all entities and relationships tagged with this video_id
-                    pass
-                else:
-                    # For in-memory, since we don't have tagging yet, we won't delete KG data
-                    # This would need to be implemented with proper tagging
-                    pass
-            except Exception as e:
-                print(f"Warning: Could not delete knowledge graph data: {e}")
         
         return jsonify({"success": True, "message": f"Video {video_id} deleted successfully"})
     except Exception as e:

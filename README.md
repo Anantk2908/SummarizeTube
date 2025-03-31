@@ -1,6 +1,6 @@
-# YouTube RAG - Enhanced with Knowledge Graphs
+# YouTube RAG
 
-A Retrieval-Augmented Generation (RAG) application for YouTube videos with LangGraph-powered knowledge graph integration.
+A Retrieval-Augmented Generation (RAG) application for YouTube videos.
 
 ## Features
 
@@ -8,32 +8,13 @@ A Retrieval-Augmented Generation (RAG) application for YouTube videos with LangG
 - Create semantic search indexes for video content
 - Ask questions about video content with precise timestamp references
 - Generate summaries of videos
-- **NEW:** Build knowledge graphs from video content for enhanced understanding
-- **NEW:** Use structured knowledge to provide more accurate and contextual answers
-
-## Knowledge Graph Features
-
-The application now includes a LangGraph-powered knowledge graph builder that:
-
-1. Extracts entities (people, concepts, products, organizations) from video transcripts
-2. Identifies relationships between these entities
-3. Stores this structured information in either:
-   - Neo4j graph database (recommended for production)
-   - In-memory graph (for simple deployments)
-4. Uses this knowledge graph to enhance RAG responses
-
-When enabled, the knowledge graph:
-- Provides structured understanding of video content
-- Helps identify key concepts and their relationships
-- Improves answer accuracy by incorporating structured knowledge
-- Enables more contextual responses
+- Click on timestamps in answers to jump to specific parts of videos
 
 ## Requirements
 
 - Python 3.8+
 - Ollama for local LLM inference
 - FFmpeg for audio processing (when using Whisper)
-- Optional: Neo4j database (for scalable knowledge graph storage)
 
 ## Installation
 
@@ -62,13 +43,6 @@ Key configuration options in the `.env` file:
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_MODEL=llama3
 OLLAMA_TIMEOUT=30
-
-# Knowledge Graph configuration
-USE_KNOWLEDGE_GRAPH=True
-# For Neo4j (optional)
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=password
 ```
 
 ## API Endpoints
@@ -79,6 +53,7 @@ NEO4J_PASSWORD=password
 - `POST /ask` - Ask a question about a video
 - `POST /summarize` - Generate a summary of a video
 - `GET /get_processed_videos` - List all processed videos
+<<<<<<< Updated upstream
 
 ### Knowledge Graph Endpoints
 
@@ -101,3 +76,10 @@ For example, when asked about a complex topic from a video, the system can:
 - Retrieve relevant text chunks (traditional RAG)
 - Enhance the answer with relevant entity relationships from the knowledge graph
 - Provide more accurate and structured responses
+=======
+- `GET /get_chunks` - Get transcript chunks for a video
+
+## License
+
+MIT
+>>>>>>> Stashed changes

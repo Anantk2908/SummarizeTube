@@ -96,6 +96,38 @@
             border-radius: 5px;
             font-style: italic;
         }
+        .timestamp-large {
+            color: #0d6efd;
+            cursor: pointer;
+            text-decoration: underline;
+            font-weight: bold;
+            font-size: 1.2em;
+            padding: 5px 10px;
+            background-color: #f0f8ff;
+            border-radius: 5px;
+            display: inline-block;
+        }
+        .timestamp-large:hover {
+            background-color: #e6f2ff;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        /* Enhanced styles for inline timestamps in answers */
+        #answer a.timestamp {
+            display: inline-block;
+            color: #0d6efd;
+            font-weight: bold;
+            background-color: rgba(13, 110, 253, 0.1);
+            padding: 0 6px;
+            border-radius: 4px;
+            text-decoration: none;
+            border-bottom: 1px dotted #0d6efd;
+            transition: all 0.2s ease;
+        }
+        #answer a.timestamp:hover {
+            background-color: rgba(13, 110, 253, 0.2);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            transform: translateY(-1px);
+        }
     </style>
 </head>
 <body>
@@ -173,12 +205,14 @@
                                         <div class="mb-3">
                                             <label for="question" class="form-label">Ask a question about the video:</label>
                                             <input type="text" class="form-control" id="question" placeholder="What is this video about?">
+                                            <small class="text-muted mt-1">Ask anything about the video or type "what time is it" to get the current timestamp.</small>
                                         </div>
                                         <button class="btn btn-primary" id="askBtn">Get Answer</button>
                                         
                                         <div id="answerSection" class="mt-4" style="display: none;">
                                             <h5>Answer:</h5>
                                             <div id="answer" class="p-3 bg-light rounded"></div>
+                                            <small class="text-muted mt-1">Timestamps like [00:10:30] in answers are clickable and will take you directly to that point in the video.</small>
                                             
                                             <h5 class="mt-3">Relevant Timestamps:</h5>
                                             <div id="timestamps" class="list-group"></div>
@@ -258,9 +292,6 @@
         const modelDropdown = document.getElementById('modelDropdown');
         const videoList = document.getElementById('videoList');
         const loadChunksBtn = document.getElementById('loadChunksBtn');
-        
-        // New variable to track streaming
-        let currentEventSource = null;
         
         // Save selected model when changed
         modelDropdown.addEventListener('change', function() {
@@ -452,80 +483,80 @@
             }
         }
         
-        // Process a YouTube video
+        // Function to process a YouTube video
         async function processVideo() {
             const youtubeUrl = document.getElementById('youtubeUrl').value.trim();
-            const selectedModel = modelDropdown.value;
             
             if (!youtubeUrl) {
                 showError('Please enter a YouTube URL.');
                 return;
             }
             
-            // Show loading
+            // Hide video content and show loading
             document.getElementById('initialState').style.display = 'none';
             document.getElementById('videoContent').style.display = 'none';
             document.getElementById('loading').style.display = 'block';
             document.getElementById('loadingText').textContent = 'Processing video...';
             
             try {
+                const model = modelDropdown.value;
+                
                 const response = await fetch('/process_video', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ url: youtubeUrl, model: selectedModel })
+                    body: JSON.stringify({
+                        url: youtubeUrl,
+                        model: model
+                    })
                 });
                 
                 const data = await response.json();
                 
-                if (response.ok) {
-                    currentVideoId = data.video_id;
-                    document.getElementById('videoTitle').textContent = data.title;
-                    document.getElementById('videoSource').textContent = data.source;
-                    document.getElementById('loading').style.display = 'none';
-                    document.getElementById('videoContent').style.display = 'block';
-                    
-                    // Reset UI elements
-                    document.getElementById('answerSection').style.display = 'none';
-                    document.getElementById('summarySection').style.display = 'none';
-                    document.getElementById('chunksPlaceholder').textContent = 'Click "Load Chunks" to view the transcript chunks';
-                    document.getElementById('chunksPlaceholder').style.display = 'block';
-                    document.getElementById('chunksList').style.display = 'none';
-                    
-                    // Refresh video list
-                    loadProcessedVideos();
-                } else {
-                    document.getElementById('loading').style.display = 'none';
-                    document.getElementById('initialState').style.display = 'block';
-                    showError(data.error || 'Failed to process video.');
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to process video');
                 }
-            } catch (err) {
+                
+                // Update UI with video details
+                document.getElementById('videoTitle').textContent = data.title;
+                document.getElementById('videoSource').textContent = data.source;
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('videoContent').style.display = 'block';
+                
+                // Store video ID for later use
+                currentVideoId = data.video_id;
+                
+                // Reset answer and summary sections
+                document.getElementById('answerSection').style.display = 'none';
+                document.getElementById('summarySection').style.display = 'none';
+                
+                // Refresh the list of processed videos
+                loadProcessedVideos();
+                
+            } catch (error) {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('initialState').style.display = 'block';
-                showError('Failed to connect to the server.');
+                showError(error.message);
             }
         }
         
-        // Function to close any open SSE connections
-        function closeEventSource() {
-            if (currentEventSource) {
-                currentEventSource.close();
-                currentEventSource = null;
-            }
-        }
-        
-        // Update askQuestion function to support streaming
+        // Function to ask a question about the video
         function askQuestion() {
-            const question = document.getElementById('question').value.trim();
-            const model = modelDropdown.value;
-            
-            if (!currentVideoId || !question) {
-                showError("Please enter your question.");
+            if (!currentVideoId) {
+                showError('No video loaded. Please process a video first.');
                 return;
             }
             
-            // Show loading
+            const questionInput = document.getElementById('question');
+            const question = questionInput.value.trim();
+            
+            if (!question) {
+                showError('Please enter a question.');
+                return;
+            }
+            
+            // Clear previous answers
             const answerSection = document.getElementById('answerSection');
             const answer = document.getElementById('answer');
             const timestamps = document.getElementById('timestamps');
@@ -534,59 +565,64 @@
             timestamps.innerHTML = '';
             answerSection.style.display = 'block';
             
-            // Non-streaming approach
+            const model = document.getElementById('modelDropdown').value;
+            
+            // Use regular endpoint
             fetch('/ask', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    video_id: currentVideoId,
-                    question: question,
-                    model: model
-                })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ video_id: currentVideoId, question: question, model: model })
             })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    throw new Error(data.error);
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to get answer');
+                    });
                 }
+                return response.json();
+            })
+            .then(data => {
+                answer.innerHTML = markdownToHtml(data.answer);
                 
-                answer.innerHTML = data.answer;
+                // Handle timestamp data if available
+                if (data.timestamp_data) {
+                    // Create timestamp display
+                    timestamps.innerHTML = '';
+                    const timestampInfo = document.createElement('div');
+                    timestampInfo.className = 'card p-3 mt-2';
+                    timestampInfo.innerHTML = `
+                        <h6>Current Timestamp:</h6>
+                        <div>Date: <strong>${data.timestamp_data.date}</strong></div>
+                        <div>Time: <strong>${data.timestamp_data.time}</strong></div>
+                        <div>ISO: <small>${data.timestamp_data.iso}</small></div>
+                        <div>Unix: <small>${data.timestamp_data.unix}</small></div>
+                    `;
+                    timestamps.appendChild(timestampInfo);
+                    return;
+                }
                 
                 // Display timestamps
                 timestamps.innerHTML = '';
                 if (data.timestamps && data.timestamps.length > 0) {
                     data.timestamps.forEach(ts => {
                         const item = document.createElement('div');
-                        item.className = 'list-group-item';
+                        item.className = 'list-group-item d-flex align-items-start';
                         
-                        const timeElement = document.createElement('span');
-                        timeElement.className = 'timestamp';
-                        timeElement.textContent = ts.formatted_time;
-                        timeElement.addEventListener('click', () => {
-                            // Get video URL from either the span or the div, using a more reliable approach
-                            const videoElement = document.querySelector(`.video-title[data-id="${currentVideoId}"]`) || 
-                                                document.querySelector(`.video-item[data-id="${currentVideoId}"]`);
-                            const videoUrl = videoElement?.dataset.url;
-                            
-                            // Get the YouTube ID even if the URL is directly a video ID
-                            const videoId = videoUrl?.includes('youtube.com') || videoUrl?.includes('youtu.be') ? 
-                                          extractVideoId(videoUrl) : currentVideoId;
-                                          
-                            if (videoId) {
-                                window.open(`https://youtube.com/watch?v=${videoId}&t=${Math.floor(ts.time)}`, '_blank');
-                            } else {
-                                console.error("Could not find video URL for timestamp", currentVideoId);
-                                showError("Could not open video timestamp. Video URL not found.");
-                            }
+                        const timestampSpan = document.createElement('span');
+                        timestampSpan.className = 'timestamp-large me-3';
+                        timestampSpan.dataset.time = ts.time;
+                        timestampSpan.textContent = ts.formatted_time;
+                        
+                        timestampSpan.addEventListener('click', () => {
+                            window.open(`https://www.youtube.com/watch?v=${currentVideoId}&t=${Math.floor(ts.time)}s`, '_blank');
                         });
                         
-                        const textElement = document.createElement('span');
-                        textElement.textContent = `: ${ts.text_preview}`;
+                        const textPreview = document.createElement('div');
+                        textPreview.className = 'flex-grow-1';
+                        textPreview.textContent = ts.text_preview;
                         
-                        item.appendChild(timeElement);
-                        item.appendChild(textElement);
+                        item.appendChild(timestampSpan);
+                        item.appendChild(textPreview);
                         timestamps.appendChild(item);
                     });
                 }
@@ -596,7 +632,7 @@
             });
         }
         
-        // Update summarizeVideo function to support streaming
+        // Function to generate a summary of the video
         function summarizeVideo() {
             if (!currentVideoId) {
                 showError("No video selected.");
@@ -615,7 +651,6 @@
             
             const model = modelDropdown.value;
             
-            // Non-streaming approach
             fetch('/summarize', {
                 method: 'POST',
                 headers: {
@@ -760,6 +795,50 @@
                 showError(`Error running debug: ${err.message}`);
             }
         });
+        
+        // Function to convert markdown to HTML
+        function markdownToHtml(text) {
+            if (!text) return '';
+            
+            // Handle headers
+            text = text.replace(/^### (.*$)/gm, '<h5>$1</h5>');
+            text = text.replace(/^## (.*$)/gm, '<h4>$1</h4>');
+            text = text.replace(/^# (.*$)/gm, '<h3>$1</h3>');
+            
+            // Handle bold and italic
+            text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
+            
+            // Handle code blocks
+            text = text.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+            text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+            
+            // Handle lists
+            text = text.replace(/^\s*\*\s(.*$)/gm, '<li>$1</li>');
+            text = text.replace(/^\s*\d+\.\s(.*$)/gm, '<li>$1</li>');
+            
+            // Handle links
+            text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+            
+            // Handle timestamp format [HH:MM:SS] and make them clickable
+            if (currentVideoId) {
+                text = text.replace(/\[(\d{2}):(\d{2}):(\d{2})\]/g, function(match, h, m, s) {
+                    const seconds = parseInt(h) * 3600 + parseInt(m) * 60 + parseInt(s);
+                    return `<a href="https://www.youtube.com/watch?v=${currentVideoId}&t=${seconds}" target="_blank" class="timestamp">${match}</a>`;
+                });
+            }
+            
+            // Handle paragraphs and line breaks
+            text = text.replace(/\n\n/g, '</p><p>');
+            text = text.replace(/\n/g, '<br>');
+            
+            // Wrap in paragraph tags if not already
+            if (!text.startsWith('<')) {
+                text = '<p>' + text + '</p>';
+            }
+            
+            return text;
+        }
         
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
