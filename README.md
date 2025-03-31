@@ -1,6 +1,6 @@
 # YouTube RAG
 
-A Retrieval-Augmented Generation (RAG) application for YouTube videos.
+A Retrieval-Augmented Generation (RAG) application for YouTube videos with enhanced retrieval accuracy.
 
 ## Features
 
@@ -9,12 +9,16 @@ A Retrieval-Augmented Generation (RAG) application for YouTube videos.
 - Ask questions about video content with precise timestamp references
 - Generate summaries of videos
 - Click on timestamps in answers to jump to specific parts of videos
+- Two-stage retrieval system with cross-encoder reranking for better accuracy
+- Efficient chunking with overlap for context preservation
 
 ## Requirements
 
 - Python 3.8+
 - Ollama for local LLM inference
 - FFmpeg for audio processing (when using Whisper)
+- ChromaDB for vector storage
+- Sentence Transformers for embeddings and reranking
 
 ## Installation
 
@@ -26,7 +30,7 @@ A Retrieval-Augmented Generation (RAG) application for YouTube videos.
 3. Start Ollama on your system (see https://ollama.ai)
 4. Pull a model in Ollama:
    ```
-   ollama pull llama3
+   ollama pull llama3.2
    ```
 5. Copy `.env.example` to `.env` and configure as needed
 6. Start the application:
@@ -41,8 +45,11 @@ Key configuration options in the `.env` file:
 ```
 # Ollama configuration
 OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=llama3
+OLLAMA_MODEL=llama3.2
 OLLAMA_TIMEOUT=30
+
+# Debug mode (optional)
+DEBUG=False
 ```
 
 ## API Endpoints
@@ -50,36 +57,52 @@ OLLAMA_TIMEOUT=30
 ### Core Endpoints
 
 - `POST /process_video` - Process a YouTube video
+  - Extracts transcript using YouTube API or Whisper
+  - Splits content into chunks with overlap
+  - Stores chunks in vector database
+
 - `POST /ask` - Ask a question about a video
+  - Uses two-stage retrieval (vector search + reranking)
+  - Returns answer with clickable timestamps
+  - Provides context from most relevant chunks
+
 - `POST /summarize` - Generate a summary of a video
+  - Creates concise video summary
+  - Caches results for efficiency
+  - Includes key points and timestamps
+
 - `GET /get_processed_videos` - List all processed videos
-<<<<<<< Updated upstream
-
-### Knowledge Graph Endpoints
-
-- `GET /kg_info` - Get knowledge graph statistics
-- `GET /kg_entities` - Get entities and relationships for a video
-
-## How Knowledge Graphs Enhance RAG
-
-1. **Traditional RAG** uses embeddings to find similar chunks of text, but often struggles with:
-   - Understanding relationships between concepts
-   - Following complex reasoning chains
-   - Providing structured answers
-
-2. **Knowledge Graph Enhanced RAG** adds structured understanding by:
-   - Identifying key entities in the content
-   - Mapping relationships between these entities
-   - Using this structured data to enhance responses
-
-For example, when asked about a complex topic from a video, the system can:
-- Retrieve relevant text chunks (traditional RAG)
-- Enhance the answer with relevant entity relationships from the knowledge graph
-- Provide more accurate and structured responses
-=======
 - `GET /get_chunks` - Get transcript chunks for a video
+- `POST /delete_video` - Delete a processed video
+- `GET /config` - Get current configuration
+- `GET /get_available_models` - List available Ollama models
 
-## License
+## How the Enhanced RAG System Works
 
-MIT
->>>>>>> Stashed changes
+1. **Content Processing**:
+   - Extract transcripts from YouTube videos
+   - Split content into overlapping chunks (500 chars with 100 char overlap)
+   - Store chunks with metadata in ChromaDB
+
+2. **Question Answering**:
+   - Initial vector search to find relevant chunks
+   - Cross-encoder reranking for better accuracy
+   - Select top 5 most relevant chunks
+   - Generate answer using local LLM
+   - Provide timestamps for video navigation
+
+3. **Key Improvements**:
+   - Two-stage retrieval system for better accuracy
+   - Efficient chunking with overlap for context preservation
+   - Local LLM inference for privacy and control
+   - Cached summaries for better performance
+   - Comprehensive error handling and fallbacks
+
+## Future Improvements
+
+- Add support for more video platforms
+- Implement user authentication
+- Add video categorization and tagging
+- Support for multiple languages
+- Enhanced caching system
+- Batch processing capabilities

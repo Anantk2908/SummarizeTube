@@ -15,6 +15,7 @@ import ollama
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 import traceback
+from sentence_transformers import CrossEncoder
 
 # Load environment variables from .env file
 load_dotenv()
@@ -46,8 +47,19 @@ collection = chroma_client.get_or_create_collection(
     embedding_function=sentence_transformer_ef
 )
 
+# Initialize reranker
+reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v1')
+
 # Initialize Whisper model
 whisper_model = None  # Lazy loading to save memory
+
+# Initialize text splitter with very small chunks and more overlap
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,  # Very small chunks
+    chunk_overlap=100,
+    length_function=len,
+    separators=["\n\n", "\n", " ", ""]
+)
 
 # Function to extract video ID from URL
 def extract_video_id(youtube_url):
@@ -242,10 +254,6 @@ def process_transcript_for_rag(video_id, transcript, timestamps, title, youtube_
             pass  # Ignore if no entries exist
         
         # Split transcript into chunks for better RAG
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=100
-        )
         chunks = text_splitter.split_text(transcript)
         
         # Prepare metadata and chunks for storage
@@ -525,7 +533,7 @@ def ask_question():
     try:
         print(f"Querying ChromaDB for video_id: {video_id}")
         
-        # First get all chunks for this video (without $not operator which isn't supported in get())
+        # First get all chunks for this video
         all_chunks = collection.get(
             where={"video_id": video_id},
             include=["metadatas", "documents"]
@@ -534,7 +542,7 @@ def ask_question():
         if not all_chunks["documents"]:
             return jsonify({"error": "No content found for this video ID"}), 404
             
-        # Filter out summaries manually (since we can't use $not in get())
+        # Filter out summaries manually
         filtered_docs = []
         filtered_metadatas = []
         
@@ -548,86 +556,69 @@ def ask_question():
             
         print(f"Found {len(filtered_docs)} transcript chunks for video")
         
-        # Then query for relevant chunks
+        # Get initial candidates using vector search
         results = collection.query(
             query_texts=[question],
-            where={"video_id": video_id},
-            n_results=12,  # Increased from 8 to get more candidates
-            include=["metadatas", "documents", "distances"]
+            n_results=10,  # Get more candidates for reranking
+            include=["metadatas", "documents"]
         )
         
-        print(f"Query returned {len(results['documents'][0])} chunks")
+        print(f"Initial vector search returned {len(results['documents'][0])} chunks")
         
         # Filter out summaries from query results
         filtered_results_docs = []
         filtered_results_metadatas = []
-        filtered_results_distances = []
         
         for i, metadata in enumerate(results["metadatas"][0]):
             if metadata.get("type") != "summary":
                 filtered_results_docs.append(results["documents"][0][i])
                 filtered_results_metadatas.append(metadata)
-                if "distances" in results and results["distances"]:
-                    filtered_results_distances.append(results["distances"][0][i])
         
         if not filtered_results_docs:
             return jsonify({"error": "No relevant transcript chunks found for this question"}), 404
             
-        print(f"After filtering, using {len(filtered_results_docs)} relevant chunks")
+        print(f"After filtering, using {len(filtered_results_docs)} chunks for reranking")
 
-        # Get chunks and their timestamps
-        chunks_with_time = []
+        # Prepare pairs for reranking
+        pairs = [(question, doc) for doc in filtered_results_docs]
+        
+        # Rerank the chunks
+        print("Reranking chunks...")
+        rerank_scores = reranker.predict(pairs)
+        
+        # Combine chunks with their scores and metadata
+        chunks_with_scores = []
         for i, doc in enumerate(filtered_results_docs):
             metadata = filtered_results_metadatas[i]
-            score = float(filtered_results_distances[i]) if filtered_results_distances else 1.0
-            chunks_with_time.append({
+            chunks_with_scores.append({
                 "text": doc,
+                "score": float(rerank_scores[i]),
                 "timestamp": float(metadata.get("timestamp", 0)),
                 "formatted_time": metadata.get("formatted_time", "00:00:00"),
-                "text_preview": metadata.get("text_preview", ""),
-                "score": score
+                "text_preview": metadata.get("text_preview", "")
             })
-            print(f"Chunk {i}: score={score:.4f}, time={metadata.get('formatted_time', '00:00:00')}, preview={metadata.get('text_preview', '')[:50]}")
-
-        # Sort chunks by timestamp to maintain chronological order
-        chunks_with_time.sort(key=lambda x: x["timestamp"])
-
-        # Select chunks based on relevance and continuity
+        
+        # Sort by reranking score
+        chunks_with_scores.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Select top chunks based on reranking scores
         selected_chunks = []
         timestamps = []
         
-        # Use a more forgiving relevance threshold to include more potentially relevant chunks
-        relevance_threshold = 0.5  # Increased from 0.3
-        
-        # First add highly relevant chunks (low distance score)
-        for chunk in chunks_with_time:
-            if chunk["score"] < relevance_threshold:
-                selected_chunks.append(chunk["text"])
-                timestamps.append({
-                    "time": chunk["timestamp"],
-                    "formatted_time": chunk["formatted_time"],
-                    "text_preview": chunk["text_preview"]
-                })
-                print(f"Selected chunk with score {chunk['score']:.4f}: {chunk['text_preview'][:50]}")
-        
-        # If we don't have enough chunks by relevance, add the most relevant ones regardless of threshold
-        if len(selected_chunks) < 3:
-            # Sort by relevance
-            sorted_by_relevance = sorted(chunks_with_time, key=lambda x: x["score"])
-            for chunk in sorted_by_relevance:
-                if chunk["text"] not in selected_chunks and len(selected_chunks) < 5:
-                    selected_chunks.append(chunk["text"])
-                    timestamps.append({
-                        "time": chunk["timestamp"],
-                        "formatted_time": chunk["formatted_time"],
-                        "text_preview": chunk["text_preview"]
-                    })
-                    print(f"Added chunk by relevance sorting: {chunk['text_preview'][:50]}")
+        # Use top 5 chunks after reranking
+        for chunk in chunks_with_scores[:5]:
+            selected_chunks.append(chunk["text"])
+            timestamps.append({
+                "time": chunk["timestamp"],
+                "formatted_time": chunk["formatted_time"],
+                "text_preview": chunk["text_preview"]
+            })
+            print(f"Selected chunk with score {chunk['score']:.4f}: {chunk['text_preview'][:50]}")
 
         if not selected_chunks:
             return jsonify({"error": "Could not find relevant content for this question"}), 404
             
-        print(f"Selected {len(selected_chunks)} chunks for context")
+        print(f"Selected {len(selected_chunks)} chunks after reranking")
 
         # Combine chunks with paragraph breaks for better readability
         context = "\n\n".join(selected_chunks)
