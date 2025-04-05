@@ -128,6 +128,80 @@
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
             transform: translateY(-1px);
         }
+        .video-thumbnail {
+            min-width: 120px;
+            max-width: 120px;
+            height: 68px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            margin-right: 10px;
+            position: relative;
+            overflow: hidden;
+            cursor: pointer;
+        }
+        .video-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .video-thumbnail .video-index {
+            position: absolute;
+            top: 0;
+            left: 0;
+            background-color: rgba(13, 110, 253, 0.8);
+            color: white;
+            padding: 2px 6px;
+            font-size: 12px;
+            border-bottom-right-radius: 4px;
+        }
+        .video-thumbnail .video-duration {
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 1px 4px;
+            font-size: 11px;
+            border-top-left-radius: 4px;
+        }
+        .video-summary-card {
+            margin-bottom: 15px;
+            border-left: 4px solid #0d6efd;
+        }
+        .video-summary-card .card-header {
+            background-color: #f8f9fa;
+        }
+        .video-summary-card .card-body {
+            padding: 15px;
+        }
+        .key-points {
+            margin-top: 15px;
+            padding-left: 20px;
+        }
+        .key-points li {
+            margin-bottom: 5px;
+        }
+        #videoNavStrip {
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        .video-nav-item {
+            text-align: center;
+            padding: 5px;
+            transition: all 0.2s;
+        }
+        .video-nav-item:hover {
+            transform: translateY(-2px);
+        }
+        .video-nav-item .video-title {
+            font-size: 12px;
+            margin-top: 5px;
+            max-width: 120px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
     </style>
 </head>
 <body>
@@ -157,9 +231,9 @@
                         
                         <div class="mb-3">
                             <label for="youtubeUrl" class="form-label">YouTube URL:</label>
-                            <input type="text" class="form-control" id="youtubeUrl" placeholder="https://www.youtube.com/watch?v=...">
+                            <input type="text" class="form-control" id="youtubeUrl" placeholder="Enter YouTube Video or Playlist URL">
                         </div>
-                        <button class="btn btn-primary w-100" id="processBtn">Process Video</button>
+                        <button class="btn btn-primary w-100" id="processBtn">Process URL</button>
                         
                         <hr>
                         
@@ -176,7 +250,7 @@
                 <div id="mainContent">
                     <!-- Initial state -->
                     <div class="card text-center p-5" id="initialState">
-                        <p class="text-muted">Enter a YouTube URL and click "Process Video" to get started</p>
+                        <p class="text-muted">Enter a YouTube video or playlist URL and click "Process URL" to get started</p>
                     </div>
                     
                     <!-- Video content section (hidden initially) -->
@@ -221,12 +295,59 @@
                                     
                                     <!-- Summary Tab -->
                                     <div class="tab-pane fade" id="summary-tab-pane" role="tabpanel" tabindex="0">
-                                        <button class="btn btn-primary mb-3" id="summarizeBtn">Generate Summary</button>
-                                        <div id="summarySection" style="display: none;">
-                                            <h5>Video Summary:</h5>
-                                            <div id="summary" class="p-3 bg-light rounded"></div>
-                                            <div id="summaryMeta" class="text-muted mt-2 small">
-                                                <span id="summarySource" style="display: none;"><span class="badge bg-info">Cached</span> Generated on <span id="summaryTime"></span></span>
+                                        <!-- Video Summary Section (shown for single videos) -->
+                                        <div id="videoSummarySection">
+                                            <button class="btn btn-primary mb-3" id="summarizeBtn">Generate Summary</button>
+                                            <div id="summarySection" style="display: none;">
+                                                <h5>Video Summary:</h5>
+                                                <div id="summary" class="p-3 bg-light rounded"></div>
+                                                <div id="summaryMeta" class="text-muted mt-2 small">
+                                                    <span id="summarySource" style="display: none;"><span class="badge bg-info">Cached</span> Generated on <span id="summaryTime"></span></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Playlist Summary Section (hidden by default, shown for playlists) -->
+                                        <div id="playlistSummarySection" style="display: none;">
+                                            <button class="btn btn-primary mb-3" id="summarizePlaylistBtn">Generate Playlist Summary</button>
+                                            
+                                            <div id="playlistSummaryContent" style="display: none;">
+                                                <!-- Playlist Overview Card -->
+                                                <div class="card mb-3">
+                                                    <div class="card-header d-flex justify-content-between align-items-center">
+                                                        <h5 class="m-0">Playlist Overview</h5>
+                                                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#playlistOverviewCollapse">
+                                                            <i class="bi bi-chevron-down"></i>
+                                                        </button>
+                                                    </div>
+                                                    <div class="collapse show" id="playlistOverviewCollapse">
+                                                        <div class="card-body">
+                                                            <div id="playlistOverviewText" class="mb-3"></div>
+                                                            <div class="text-muted small">
+                                                                <span id="playlistSummaryGenTime"></span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Video Navigation Strip -->
+                                                <div class="mb-3">
+                                                    <h6>Quick Navigation:</h6>
+                                                    <div class="d-flex overflow-auto pb-2" id="videoNavStrip">
+                                                        <!-- Video thumbnails will be inserted here -->
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Controls -->
+                                                <div class="btn-group mb-3">
+                                                    <button class="btn btn-sm btn-outline-secondary" id="expandAllVideosBtn">Expand All</button>
+                                                    <button class="btn btn-sm btn-outline-secondary" id="collapseAllVideosBtn">Collapse All</button>
+                                                </div>
+                                                
+                                                <!-- Individual Video Summaries -->
+                                                <div id="videoSummariesContainer">
+                                                    <!-- Video summary cards will be inserted here -->
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -283,6 +404,9 @@
     <script>
         // Global variables
         let currentVideoId = null;
+        let currentVideoTitle = '';
+        let currentVideoUrl = '';
+        let currentContentType = 'video';
         
         // DOM elements
         const processBtn = document.getElementById('processBtn');
@@ -383,157 +507,214 @@
                 const response = await fetch('/get_processed_videos');
                 const data = await response.json();
                 
-                videoList.innerHTML = '';
+                // Clear existing list
+                document.getElementById('videoList').innerHTML = '';
                 
-                if (data.videos && data.videos.length > 0) {
-                    data.videos.forEach(video => {
-                        const div = document.createElement('div');
-                        div.className = 'video-item d-flex justify-content-between align-items-center';
-                        
-                        // Create the video title element
-                        const titleSpan = document.createElement('span');
-                        titleSpan.textContent = video.title;
-                        titleSpan.className = 'video-title';
-                        titleSpan.dataset.id = video.id;
-                        titleSpan.dataset.url = video.url;
-                        titleSpan.style.cursor = 'pointer';
-                        
-                        // Add click handler to the title
-                        titleSpan.addEventListener('click', () => {
-                            currentVideoId = video.id;
-                            document.getElementById('videoTitle').textContent = video.title;
-                            document.getElementById('videoSource').textContent = 'Cached';
-                            document.getElementById('initialState').style.display = 'none';
-                            document.getElementById('videoContent').style.display = 'block';
-                            
-                            // Reset answer and summary sections
-                            document.getElementById('answerSection').style.display = 'none';
-                            document.getElementById('summarySection').style.display = 'none';
-                            
-                            // Reset chunks display
-                            document.getElementById('chunksPlaceholder').textContent = 'Click "Load Chunks" to view the transcript chunks';
-                            document.getElementById('chunksPlaceholder').style.display = 'block';
-                            document.getElementById('chunksList').style.display = 'none';
-                            
-                            // Save current model selection
-                            localStorage.setItem('selectedModel', modelDropdown.value);
-                        });
-                        
-                        // Create delete button
-                        const deleteBtn = document.createElement('button');
-                        deleteBtn.className = 'btn btn-sm btn-outline-danger';
-                        deleteBtn.innerHTML = '<i class="bi bi-trash"></i>';
-                        deleteBtn.title = 'Delete video';
-                        deleteBtn.dataset.id = video.id;
-                        deleteBtn.dataset.title = video.title;
-                        
-                        // Add click handler to delete button
-                        deleteBtn.addEventListener('click', (e) => {
-                            e.stopPropagation(); // Prevent video selection when clicking delete
-                            confirmDeleteVideo(video.id, video.title);
-                        });
-                        
-                        div.appendChild(titleSpan);
-                        div.appendChild(deleteBtn);
-                        videoList.appendChild(div);
-                    });
-                } else {
-                    videoList.innerHTML = '<p class="text-muted p-2">No videos processed yet</p>';
+                if (!data.all || data.all.length === 0) {
+                    document.getElementById('videoList').innerHTML = '<div class="text-muted text-center p-3">No processed videos or playlists yet</div>';
+                    return;
                 }
-            } catch (err) {
-                showError('Failed to load processed videos.');
+                
+                // Add videos and playlists with appropriate icons
+                data.all.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'video-item d-flex align-items-center';
+                    div.dataset.id = item.id;
+                    div.dataset.type = item.type;
+                    div.dataset.url = item.url;
+                    
+                    // Add icon based on type
+                    const icon = item.type === 'playlist' ? 'bi-collection-play' : 'bi-play-btn';
+                    const typeText = item.type === 'playlist' ? 'Playlist' : 'Video';
+                    
+                    div.innerHTML = `
+                        <div class="me-2"><i class="bi ${icon}"></i></div>
+                        <div class="video-title">${item.title}</div>
+                        <div class="ms-auto d-flex align-items-center">
+                            <span class="badge bg-secondary me-2">${typeText}</span>
+                            <button class="btn btn-sm btn-danger delete-video-btn">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    `;
+                    
+                    div.addEventListener('click', (e) => {
+                        // Don't trigger if the delete button was clicked
+                        if (e.target.closest('.delete-video-btn')) {
+                            return;
+                        }
+                        selectContent(item.id, item.title, item.url, item.type);
+                    });
+                    
+                    // Add delete functionality
+                    const deleteBtn = div.querySelector('.delete-video-btn');
+                    deleteBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        deleteContent(item.id, item.type);
+                    });
+                    
+                    document.getElementById('videoList').appendChild(div);
+                });
+                
+            } catch (error) {
+                console.error('Error loading videos:', error);
             }
         }
         
-        // Function to confirm and delete a video
-        function confirmDeleteVideo(videoId, videoTitle) {
-            if (confirm(`Are you sure you want to delete "${videoTitle}"?`)) {
-                deleteVideo(videoId);
-            }
-        }
-        
-        // Function to delete a video
-        async function deleteVideo(videoId) {
+        // Function to delete a video or playlist
+        async function deleteContent(id, type) {
+            const confirmDelete = confirm(`Are you sure you want to delete this ${type}?`);
+            if (!confirmDelete) return;
+            
             try {
                 const response = await fetch('/delete_video', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ video_id: videoId })
+                    body: JSON.stringify({
+                        video_id: id,
+                        type: type  // Send content type to the server
+                    })
                 });
                 
-                const data = await response.json();
-                
                 if (response.ok) {
-                    // If the deleted video was the current one, reset the UI
-                    if (currentVideoId === videoId) {
-                        currentVideoId = null;
-                        document.getElementById('initialState').style.display = 'block';
-                        document.getElementById('videoContent').style.display = 'none';
-                    }
-                    
-                    // Reload the video list
+                    // Refresh list
                     loadProcessedVideos();
+                    
+                    // Reset UI if we deleted the currently selected content
+                    if (currentVideoId === id) {
+                        hideVideoContent();
+                        showInitialState();
+                        currentVideoId = null;
+                    }
                 } else {
-                    showError(data.error || 'Failed to delete video.');
+                    const error = await response.json();
+                    showError(error.error || `Failed to delete ${type}`);
                 }
-            } catch (err) {
-                showError('Failed to connect to the server.');
+            } catch (error) {
+                showError(`Error: ${error.message}`);
             }
         }
         
-        // Function to process a YouTube video
-        async function processVideo() {
-            const youtubeUrl = document.getElementById('youtubeUrl').value.trim();
+        // Function to select and display a video or playlist
+        async function selectContent(id, title, url, type = 'video') {
+            // Hide initial state
+            document.getElementById('initialState').style.display = 'none';
             
-            if (!youtubeUrl) {
+            // Set current content ID and title
+            currentVideoId = id;
+            currentVideoTitle = title;
+            currentVideoUrl = url;
+            currentContentType = type;
+            
+            // Update UI with content details
+            document.getElementById('videoTitle').textContent = title;
+            
+            // Update the type badge
+            const sourceEl = document.getElementById('videoSource');
+            sourceEl.textContent = type === 'playlist' ? 'Playlist' : 'Video';
+            sourceEl.className = `badge ${type === 'playlist' ? 'bg-primary' : 'bg-secondary'}`;
+            
+            // Show content area
+            document.getElementById('videoContent').style.display = 'block';
+            
+            // Reset all tabs
+            resetTabs();
+            
+            // Update summary tab based on content type
+            updateSummaryTab();
+            
+            // Make sure we're on the QA tab
+            document.getElementById('qa-tab').click();
+        }
+        
+        // Function to process a YouTube video
+        async function processUrl() {
+            const url = document.getElementById('youtubeUrl').value.trim();
+            const model = document.getElementById('modelDropdown').value;
+            
+            if (!url) {
                 showError('Please enter a YouTube URL.');
                 return;
             }
+
+            // Basic check to differentiate video vs playlist
+            const isPlaylist = url.includes('playlist?list=') || url.includes('list=');
+            const endpoint = isPlaylist ? '/process_playlist' : '/process_video';
             
             // Hide video content and show loading
             document.getElementById('initialState').style.display = 'none';
             document.getElementById('videoContent').style.display = 'none';
             document.getElementById('loading').style.display = 'block';
-            document.getElementById('loadingText').textContent = 'Processing video...';
-            
+            document.getElementById('loadingText').textContent = isPlaylist ? 'Processing playlist... This may take a while.' : 'Processing video...';
+
             try {
-                const model = modelDropdown.value;
-                
-                const response = await fetch('/process_video', {
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        url: youtubeUrl,
+                        url: url,
                         model: model
                     })
                 });
-                
+
                 const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to process video');
-                }
-                
-                // Update UI with video details
-                document.getElementById('videoTitle').textContent = data.title;
-                document.getElementById('videoSource').textContent = data.source;
                 document.getElementById('loading').style.display = 'none';
-                document.getElementById('videoContent').style.display = 'block';
-                
-                // Store video ID for later use
-                currentVideoId = data.video_id;
-                
-                // Reset answer and summary sections
-                document.getElementById('answerSection').style.display = 'none';
-                document.getElementById('summarySection').style.display = 'none';
-                
-                // Refresh the list of processed videos
-                loadProcessedVideos();
-                
+
+                if (!response.ok) {
+                    throw new Error(data.error || `HTTP error! Status: ${response.status}`);
+                }
+
+                if (isPlaylist) {
+                    // Handle playlist response
+                    document.getElementById('initialState').style.display = 'block'; // Show initial state
+                    
+                    // Show success message
+                    const message = `Playlist '${data.playlist_title}' processing finished. ` +
+                                    `${data.successfully_processed} videos processed, ` +
+                                    `${data.failed_or_skipped} failed/skipped.`;
+                    showError(message); // Using error modal for display
+                    
+                    console.log('Playlist results:', data.results); // Log detailed results
+                    
+                    // Refresh the list of processed videos
+                    loadProcessedVideos();
+                } else {
+                    // Handle single video response
+                    currentVideoId = data.video_id;
+                    currentVideoTitle = data.title;
+                    currentVideoUrl = url;
+                    
+                    // Update UI with video details
+                    document.getElementById('videoTitle').textContent = data.title;
+                    document.getElementById('videoSource').textContent = `Source: ${data.source}`;
+                    document.getElementById('videoContent').style.display = 'block';
+                    
+                    // Reset answer and summary sections
+                    document.getElementById('answerSection').style.display = 'none';
+                    document.getElementById('summarySection').style.display = 'none';
+                    
+                    // Reset chunks display
+                    document.getElementById('chunksPlaceholder').textContent = 'Click "Load Chunks" to view the transcript chunks';
+                    document.getElementById('chunksPlaceholder').style.display = 'block';
+                    document.getElementById('chunksList').style.display = 'none';
+                    
+                    // Ensure QA tab is active
+                    document.getElementById('qa-tab').classList.add('active');
+                    document.getElementById('summary-tab').classList.remove('active');
+                    document.getElementById('chunks-tab').classList.remove('active');
+                    
+                    document.getElementById('qa-tab-pane').classList.add('show', 'active');
+                    document.getElementById('summary-tab-pane').classList.remove('show', 'active');
+                    document.getElementById('chunks-tab-pane').classList.remove('show', 'active');
+                    
+                    // Refresh the list of processed videos
+                    loadProcessedVideos();
+                }
+
             } catch (error) {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('initialState').style.display = 'block';
@@ -542,94 +723,117 @@
         }
         
         // Function to ask a question about the video
-        function askQuestion() {
-            if (!currentVideoId) {
-                showError('No video loaded. Please process a video first.');
-                return;
-            }
-            
-            const questionInput = document.getElementById('question');
-            const question = questionInput.value.trim();
+        async function askQuestion() {
+            const question = document.getElementById('question').value.trim();
             
             if (!question) {
                 showError('Please enter a question.');
                 return;
             }
             
-            // Clear previous answers
-            const answerSection = document.getElementById('answerSection');
-            const answer = document.getElementById('answer');
-            const timestamps = document.getElementById('timestamps');
+            if (!currentVideoId) {
+                showError('Please select a video or playlist first.');
+                return;
+            }
             
-            answer.innerHTML = '<p class="text-muted">Generating answer...</p>';
-            timestamps.innerHTML = '';
-            answerSection.style.display = 'block';
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loadingText').textContent = 'Generating answer...';
+            document.getElementById('answerSection').style.display = 'none';
             
-            const model = document.getElementById('modelDropdown').value;
-            
-            // Use regular endpoint
-            fetch('/ask', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ video_id: currentVideoId, question: question, model: model })
-            })
-            .then(response => {
-                if (!response.ok) {
-                    return response.json().then(data => {
-                        throw new Error(data.error || 'Failed to get answer');
-                    });
-                }
-                return response.json();
-            })
-            .then(data => {
-                answer.innerHTML = markdownToHtml(data.answer);
+            try {
+                const model = document.getElementById('modelDropdown').value;
                 
-                // Handle timestamp data if available
-                if (data.timestamp_data) {
-                    // Create timestamp display
-                    timestamps.innerHTML = '';
-                    const timestampInfo = document.createElement('div');
-                    timestampInfo.className = 'card p-3 mt-2';
-                    timestampInfo.innerHTML = `
-                        <h6>Current Timestamp:</h6>
-                        <div>Date: <strong>${data.timestamp_data.date}</strong></div>
-                        <div>Time: <strong>${data.timestamp_data.time}</strong></div>
-                        <div>ISO: <small>${data.timestamp_data.iso}</small></div>
-                        <div>Unix: <small>${data.timestamp_data.unix}</small></div>
-                    `;
-                    timestamps.appendChild(timestampInfo);
-                    return;
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        video_id: currentVideoId,
+                        type: currentContentType,  // Added type parameter
+                        question: question,
+                        model: model
+                    })
+                });
+                
+                const data = await response.json();
+                document.getElementById('loading').style.display = 'none';
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to get answer');
                 }
+                
+                // Display the answer
+                document.getElementById('answerSection').style.display = 'block';
+                
+                // Process answer text to make timestamps clickable
+                const processedAnswer = processAnswerWithTimestamps(data.answer, data.content_type);
+                document.getElementById('answer').innerHTML = processedAnswer;
+                
+                // Store timestamps for later access by timestamp click handler
+                window.lastAnswerTimestamps = data.timestamps || [];
                 
                 // Display timestamps
-                timestamps.innerHTML = '';
+                const timestampsContainer = document.getElementById('timestamps');
+                timestampsContainer.innerHTML = '';
+                
                 if (data.timestamps && data.timestamps.length > 0) {
                     data.timestamps.forEach(ts => {
-                        const item = document.createElement('div');
-                        item.className = 'list-group-item d-flex align-items-start';
+                        const tsElement = document.createElement('div');
+                        tsElement.className = 'list-group-item';
                         
-                        const timestampSpan = document.createElement('span');
-                        timestampSpan.className = 'timestamp-large me-3';
-                        timestampSpan.dataset.time = ts.time;
-                        timestampSpan.textContent = ts.formatted_time;
+                        // Handle playlist timestamps vs single video timestamps
+                        if (data.content_type === 'playlist') {
+                            tsElement.innerHTML = `
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <span class="badge bg-primary me-2">Video ${ts.video_index}</span>
+                                        <strong>${ts.video_title}</strong>
+                                    </div>
+                                    <span class="timestamp-large" 
+                                          data-url="${ts.video_url}&t=${Math.floor(ts.time)}" 
+                                          data-video-id="${ts.video_id}">
+                                        ${ts.formatted_time}
+                                    </span>
+                                </div>
+                                <div class="mt-1 text-muted">${ts.text_preview}</div>
+                            `;
+                        } else {
+                            tsElement.innerHTML = `
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="timestamp-large" 
+                                          data-time="${Math.floor(ts.time)}">
+                                        ${ts.formatted_time}
+                                    </span>
+                                    <span class="text-muted">${ts.text_preview}</span>
+                                </div>
+                            `;
+                        }
                         
-                        timestampSpan.addEventListener('click', () => {
-                            window.open(`https://www.youtube.com/watch?v=${currentVideoId}&t=${Math.floor(ts.time)}s`, '_blank');
-                        });
-                        
-                        const textPreview = document.createElement('div');
-                        textPreview.className = 'flex-grow-1';
-                        textPreview.textContent = ts.text_preview;
-                        
-                        item.appendChild(timestampSpan);
-                        item.appendChild(textPreview);
-                        timestamps.appendChild(item);
+                        timestampsContainer.appendChild(tsElement);
                     });
+                    
+                    // Add event listeners to timestamp elements
+                    document.querySelectorAll('.timestamp-large').forEach(el => {
+                        el.addEventListener('click', function() {
+                            if (this.dataset.url) {
+                                // For playlist timestamps, open the specific video URL
+                                window.open(this.dataset.url, '_blank');
+                            } else if (this.dataset.time) {
+                                // For regular video timestamps
+                                const videoUrl = `${currentVideoUrl}&t=${this.dataset.time}`;
+                                window.open(videoUrl, '_blank');
+                            }
+                        });
+                    });
+                } else {
+                    timestampsContainer.innerHTML = '<div class="text-muted p-3">No specific timestamps available</div>';
                 }
-            })
-            .catch(error => {
-                answer.innerHTML = '<p class="text-danger">Error: ' + error.message + '</p>';
-            });
+                
+            } catch (error) {
+                document.getElementById('loading').style.display = 'none';
+                showError(error.message);
+            }
         }
         
         // Function to generate a summary of the video
@@ -683,10 +887,10 @@
             });
         }
         
-        // Load chunks for a video
+        // Load chunks for a video or playlist
         async function loadChunks() {
             if (!currentVideoId) {
-                showError('No video selected.');
+                showError('No content selected.');
                 return;
             }
             
@@ -696,7 +900,7 @@
             document.getElementById('chunksList').style.display = 'none';
             
             try {
-                const response = await fetch(`/get_chunks?video_id=${currentVideoId}`);
+                const response = await fetch(`/get_chunks?video_id=${currentVideoId}&type=${currentContentType}`);
                 const data = await response.json();
                 
                 if (response.ok) {
@@ -705,7 +909,27 @@
                     chunksList.innerHTML = '';
                     
                     if (data.chunks && data.chunks.length > 0) {
+                        let currentVideoIndex = null;
+                        
                         data.chunks.forEach(chunk => {
+                            // For playlists, add video header when changing videos
+                            if (data.type === 'playlist' && chunk.video_index !== currentVideoIndex) {
+                                currentVideoIndex = chunk.video_index;
+                                
+                                // Create video header
+                                const videoHeader = document.createElement('div');
+                                videoHeader.className = 'list-group-item bg-light';
+                                videoHeader.innerHTML = `
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <h6 class="mb-0">Video ${chunk.video_index}: ${chunk.video_title}</h6>
+                                        <a href="${chunk.video_url}" target="_blank" class="btn btn-sm btn-outline-primary">
+                                            <i class="bi bi-box-arrow-up-right"></i> Open
+                                        </a>
+                                    </div>
+                                `;
+                                chunksList.appendChild(videoHeader);
+                            }
+                            
                             const item = document.createElement('div');
                             item.className = 'list-group-item';
                             
@@ -714,21 +938,15 @@
                             timestampSpan.className = 'timestamp';
                             timestampSpan.dataset.time = chunk.timestamp;
                             timestampSpan.textContent = `[${chunk.formatted_time}]`;
+                            
+                            // Set up click handler
                             timestampSpan.addEventListener('click', () => {
-                                // Get video URL from either the span or the div, using a more reliable approach
-                                const videoElement = document.querySelector(`.video-title[data-id="${currentVideoId}"]`) || 
-                                                    document.querySelector(`.video-item[data-id="${currentVideoId}"]`);
-                                const videoUrl = videoElement?.dataset.url;
-                                
-                                // Get the YouTube ID even if the URL is directly a video ID
-                                const videoId = videoUrl?.includes('youtube.com') || videoUrl?.includes('youtu.be') ? 
-                                              extractVideoId(videoUrl) : currentVideoId;
-                                              
-                                if (videoId) {
-                                    window.open(`https://youtube.com/watch?v=${videoId}&t=${Math.floor(chunk.timestamp)}`, '_blank');
+                                if (data.type === 'playlist') {
+                                    // For playlist chunks, open the specific video URL
+                                    window.open(`${chunk.video_url}&t=${Math.floor(chunk.timestamp)}`, '_blank');
                                 } else {
-                                    console.error("Could not find video URL for timestamp", currentVideoId);
-                                    showError("Could not open video timestamp. Video URL not found.");
+                                    // For single video chunks
+                                    window.open(`${currentVideoUrl}&t=${Math.floor(chunk.timestamp)}`, '_blank');
                                 }
                             });
                             
@@ -748,12 +966,13 @@
                         document.getElementById('chunksPlaceholder').style.display = 'none';
                         document.getElementById('chunksList').style.display = 'block';
                     } else {
-                        document.getElementById('chunksPlaceholder').textContent = 'No chunks found for this video.';
+                        document.getElementById('chunksPlaceholder').textContent = 'No chunks found.';
                     }
                 } else {
                     document.getElementById('chunksPlaceholder').textContent = data.error || 'Failed to load chunks.';
                 }
             } catch (err) {
+                console.error("Error loading chunks:", err);
                 document.getElementById('chunksPlaceholder').textContent = 'Error loading chunks. Please try again.';
             }
         }
@@ -771,8 +990,106 @@
             new bootstrap.Modal(document.getElementById('errorModal')).show();
         }
         
+        // Utility functions for UI state management
+        function showLoading(message) {
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loadingText').textContent = message || 'Loading...';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function showAlert(message, type) {
+            // Create alert if it doesn't exist
+            let alertDiv = document.getElementById('alertMessage');
+            if (!alertDiv) {
+                alertDiv = document.createElement('div');
+                alertDiv.id = 'alertMessage';
+                alertDiv.className = `alert alert-${type || 'info'} alert-dismissible fade show mt-3`;
+                alertDiv.role = 'alert';
+                
+                // Add close button
+                const closeButton = document.createElement('button');
+                closeButton.type = 'button';
+                closeButton.className = 'btn-close';
+                closeButton.setAttribute('data-bs-dismiss', 'alert');
+                closeButton.setAttribute('aria-label', 'Close');
+                
+                // Insert alert at the top of mainContent
+                alertDiv.appendChild(closeButton);
+                const mainContent = document.getElementById('mainContent');
+                mainContent.insertBefore(alertDiv, mainContent.firstChild);
+            } else {
+                // Update existing alert
+                alertDiv.className = `alert alert-${type || 'info'} alert-dismissible fade show mt-3`;
+            }
+            
+            alertDiv.innerHTML = message + alertDiv.innerHTML.substring(alertDiv.innerHTML.indexOf('<button'));
+            alertDiv.style.display = 'block';
+        }
+
+        function hideAlert() {
+            const alertDiv = document.getElementById('alertMessage');
+            if (alertDiv) {
+                alertDiv.style.display = 'none';
+            }
+        }
+
+        function showVideoContent() {
+            document.getElementById('videoContent').style.display = 'block';
+        }
+
+        function hideVideoContent() {
+            document.getElementById('videoContent').style.display = 'none';
+        }
+
+        function showInitialState() {
+            document.getElementById('initialState').style.display = 'block';
+        }
+
+        function hideInitialState() {
+            document.getElementById('initialState').style.display = 'none';
+        }
+
+        // Reset UI elements when a new video is processed or selected
+        function resetTabs() {
+            // Reset QA tab
+            document.getElementById('question').value = '';
+            document.getElementById('answerSection').style.display = 'none';
+            document.getElementById('answer').innerHTML = '';
+            document.getElementById('timestamps').innerHTML = '';
+
+            // Reset Summary tab
+            document.getElementById('summarySection').style.display = 'none';
+            document.getElementById('summary').innerHTML = '';
+            document.getElementById('summarySource').style.display = 'none';
+
+            // Reset Chunks tab
+            document.getElementById('chunksList').innerHTML = '';
+            document.getElementById('chunksList').style.display = 'none';
+            document.getElementById('chunksPlaceholder').style.display = 'block';
+
+            // Ensure QA tab is active
+            const qaTabButton = document.getElementById('qa-tab');
+            const summaryTabButton = document.getElementById('summary-tab');
+            const chunksTabButton = document.getElementById('chunks-tab');
+            
+            qaTabButton.classList.add('active');
+            summaryTabButton.classList.remove('active');
+            chunksTabButton.classList.remove('active');
+            
+            const qaPane = document.getElementById('qa-tab-pane');
+            const summaryPane = document.getElementById('summary-tab-pane');
+            const chunksPane = document.getElementById('chunks-tab-pane');
+
+            qaPane.classList.add('show', 'active');
+            summaryPane.classList.remove('show', 'active');
+            chunksPane.classList.remove('show', 'active');
+        }
+        
         // Event listeners
-        processBtn.addEventListener('click', processVideo);
+        processBtn.addEventListener('click', processUrl);
         askBtn.addEventListener('click', askQuestion);
         summarizeBtn.addEventListener('click', summarizeVideo);
         loadChunksBtn.addEventListener('click', loadChunks);
@@ -840,6 +1157,64 @@
             return text;
         }
         
+        // Function to process answer text and make timestamps clickable
+        function processAnswerWithTimestamps(text, contentType = 'video') {
+            if (!text) return '';
+            
+            if (contentType === 'playlist') {
+                // Match "Video X [HH:MM:SS]" format for playlists
+                return text.replace(/Video (\d+) \[(\d\d:\d\d:\d\d)\]/g, function(match, videoNum, timestamp) {
+                    return `<a href="#" class="timestamp playlist-timestamp" data-video-num="${videoNum}" data-timestamp="${timestamp}">${match}</a>`;
+                });
+            } else {
+                // Match regular [HH:MM:SS] format for single videos
+                return text.replace(/\[(\d\d:\d\d:\d\d)\]/g, function(match, timestamp) {
+                    return `<a href="#" class="timestamp" data-timestamp="${timestamp}">${match}</a>`;
+                });
+            }
+        }
+        
+        // Add event listener to process timestamp clicks in answers
+        document.addEventListener('click', function(e) {
+            if (e.target.classList.contains('timestamp')) {
+                e.preventDefault();
+                
+                const timestampStr = e.target.dataset.timestamp;
+                let seconds = 0;
+                
+                // Convert HH:MM:SS to seconds
+                if (timestampStr) {
+                    const parts = timestampStr.split(':');
+                    seconds = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+                }
+                
+                if (e.target.classList.contains('playlist-timestamp')) {
+                    // Handle playlist timestamp
+                    const videoNum = parseInt(e.target.dataset.videoNum);
+                    
+                    // Access the timestamps data directly from the last question response
+                    const timestamps = window.lastAnswerTimestamps || [];
+                    
+                    // Find the matching video in the timestamps
+                    const matchingTimestamp = timestamps.find(ts => ts.video_index === videoNum);
+                    
+                    if (matchingTimestamp) {
+                        // If found, open that specific video at the timestamp
+                        const videoUrl = `${matchingTimestamp.video_url}&t=${seconds}`;
+                        window.open(videoUrl, '_blank');
+                        return;
+                    }
+                    
+                    // If we couldn't find the exact video, just open the playlist
+                    window.open(currentVideoUrl, '_blank');
+                } else {
+                    // Handle regular timestamp for a single video
+                    const videoUrl = `${currentVideoUrl}&t=${seconds}`;
+                    window.open(videoUrl, '_blank');
+                }
+            }
+        });
+        
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             // Initialize with a default option before checking Ollama
@@ -859,6 +1234,213 @@
         
         // Refresh Ollama status every 30 seconds
         setInterval(checkOllamaStatus, 30000);
+
+        // Function to update the summary tab based on content type
+        function updateSummaryTab() {
+            // Clear any existing summary content
+            document.getElementById('summary').innerHTML = '';
+            document.getElementById('summarySection').style.display = 'none';
+            document.getElementById('summarySource').style.display = 'none';
+            
+            // Clear playlist summary content
+            document.getElementById('playlistOverviewText').innerHTML = '';
+            document.getElementById('playlistSummaryGenTime').innerHTML = '';
+            document.getElementById('videoNavStrip').innerHTML = '';
+            document.getElementById('videoSummariesContainer').innerHTML = '';
+            document.getElementById('playlistSummaryContent').style.display = 'none';
+            
+            // Hide both sections initially
+            document.getElementById('videoSummarySection').style.display = 'none';
+            document.getElementById('playlistSummarySection').style.display = 'none';
+            
+            // Show appropriate section based on content type
+            if (currentContentType === 'playlist') {
+                document.getElementById('playlistSummarySection').style.display = 'block';
+                // Enable the summary tab if it was disabled
+                const summaryTab = document.getElementById('summary-tab');
+                summaryTab.classList.remove('disabled');
+                summaryTab.removeAttribute('disabled');
+                summaryTab.style.opacity = 1;
+                summaryTab.setAttribute('title', 'View playlist summary');
+            } else {
+                document.getElementById('videoSummarySection').style.display = 'block';
+            }
+        }
+
+        // Function to generate a playlist summary
+        async function summarizePlaylist(forceRegeneration = false) {
+            if (!currentVideoId) {
+                showError('No playlist selected.');
+                return;
+            }
+            
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loadingText').textContent = 'Generating playlist summary...';
+            document.getElementById('playlistSummaryContent').style.display = 'none';
+            
+            try {
+                const model = document.getElementById('modelDropdown').value;
+                
+                const response = await fetch('/summarize_playlist', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        playlist_id: currentVideoId,
+                        model: model,
+                        force_regenerate: forceRegeneration
+                    })
+                });
+                
+                const data = await response.json();
+                document.getElementById('loading').style.display = 'none';
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to generate playlist summary');
+                }
+                
+                // Display the playlist summary
+                document.getElementById('playlistSummaryContent').style.display = 'block';
+                
+                // Update playlist overview text
+                document.getElementById('playlistOverviewText').innerHTML = data.overview_html || data.overview;
+                
+                // Add timestamp
+                const timestamp = data.created_at ? new Date(data.created_at).toLocaleString() : new Date().toLocaleString();
+                document.getElementById('playlistSummaryGenTime').innerHTML = `
+                    Generated on ${timestamp} 
+                    <button id="regenerateSummaryBtn" class="btn btn-sm btn-outline-secondary ms-2">
+                        <i class="bi bi-arrow-clockwise"></i> Regenerate
+                    </button>
+                `;
+                
+                // Add event listener to regenerate button
+                document.getElementById('regenerateSummaryBtn').addEventListener('click', () => {
+                    summarizePlaylist(true); // Pass true to force regeneration
+                });
+                
+                // Clear existing video navigation strip
+                const videoNavStrip = document.getElementById('videoNavStrip');
+                videoNavStrip.innerHTML = '';
+                
+                // Clear existing video summaries
+                const videoSummariesContainer = document.getElementById('videoSummariesContainer');
+                videoSummariesContainer.innerHTML = '';
+                
+                // Add video summaries and navigation items
+                if (data.video_summaries && data.video_summaries.length > 0) {
+                    data.video_summaries.forEach((videoSummary, index) => {
+                        // Add to navigation strip
+                        const navItem = document.createElement('div');
+                        navItem.className = 'video-nav-item';
+                        navItem.dataset.videoIndex = index + 1;
+                        navItem.innerHTML = `
+                            <div class="video-thumbnail">
+                                <div class="video-index">${index + 1}</div>
+                                <div class="video-duration">${videoSummary.duration || '??:??'}</div>
+                                <img src="${videoSummary.thumbnail || videoSummary.thumbnail_url || 'https://via.placeholder.com/120x68?text=Video'}" alt="Video ${index + 1}">
+                            </div>
+                            <div class="video-title">${videoSummary.title}</div>
+                        `;
+                        
+                        navItem.addEventListener('click', () => {
+                            // Scroll to the video summary card
+                            const card = document.getElementById(`video-summary-${index + 1}`);
+                            if (card) {
+                                card.scrollIntoView({ behavior: 'smooth' });
+                                
+                                // Highlight briefly
+                                card.classList.add('border-primary');
+                                setTimeout(() => {
+                                    card.classList.remove('border-primary');
+                                }, 1000);
+                                
+                                // Ensure it's expanded
+                                const collapse = bootstrap.Collapse.getInstance(document.getElementById(`video-summary-collapse-${index + 1}`));
+                                if (collapse && !collapse._isShown) {
+                                    collapse.show();
+                                }
+                            }
+                        });
+                        
+                        videoNavStrip.appendChild(navItem);
+                        
+                        // Add video summary card
+                        const summaryCard = document.createElement('div');
+                        summaryCard.className = 'card video-summary-card';
+                        summaryCard.id = `video-summary-${index + 1}`;
+                        
+                        summaryCard.innerHTML = `
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h6 class="m-0">
+                                    <span class="badge bg-primary me-2">${index + 1}</span>
+                                    ${videoSummary.title}
+                                </h6>
+                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" 
+                                        data-bs-target="#video-summary-collapse-${index + 1}">
+                                    <i class="bi bi-chevron-down"></i>
+                                </button>
+                            </div>
+                            <div class="collapse ${index === 0 ? 'show' : ''}" id="video-summary-collapse-${index + 1}">
+                                <div class="card-body">
+                                    <div class="row">
+                                        <div class="col-md-4">
+                                            <div class="video-thumbnail mb-3" style="width: 100%; height: 100px; max-width: none;">
+                                                <img src="${videoSummary.thumbnail || videoSummary.thumbnail_url || 'https://via.placeholder.com/320x180?text=Video+' + (index + 1)}" alt="Video ${index + 1}">
+                                                <div class="video-duration">${videoSummary.duration || '??:??'}</div>
+                                            </div>
+                                            <a href="${videoSummary.url}" target="_blank" class="btn btn-sm btn-primary w-100">
+                                                <i class="bi bi-play-fill"></i> Watch Video
+                                            </a>
+                                        </div>
+                                        <div class="col-md-8">
+                                            <div>${videoSummary.summary}</div>
+                                            ${videoSummary.key_points ? `
+                                                <h6 class="mt-3">Key Points:</h6>
+                                                <ul class="key-points">
+                                                    ${videoSummary.key_points.map(point => `<li>${point}</li>`).join('')}
+                                                </ul>
+                                            ` : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        
+                        videoSummariesContainer.appendChild(summaryCard);
+                    });
+                    
+                    // Add event listeners for expand/collapse all buttons
+                    document.getElementById('expandAllVideosBtn').addEventListener('click', () => {
+                        data.video_summaries.forEach((_, index) => {
+                            const collapseEl = document.getElementById(`video-summary-collapse-${index + 1}`);
+                            const collapse = bootstrap.Collapse.getInstance(collapseEl) || new bootstrap.Collapse(collapseEl, {toggle: false});
+                            collapse.show();
+                        });
+                    });
+                    
+                    document.getElementById('collapseAllVideosBtn').addEventListener('click', () => {
+                        data.video_summaries.forEach((_, index) => {
+                            const collapseEl = document.getElementById(`video-summary-collapse-${index + 1}`);
+                            const collapse = bootstrap.Collapse.getInstance(collapseEl) || new bootstrap.Collapse(collapseEl, {toggle: false});
+                            collapse.hide();
+                        });
+                    });
+                } else {
+                    videoSummariesContainer.innerHTML = '<div class="alert alert-info">No individual video summaries available.</div>';
+                }
+                
+            } catch (error) {
+                document.getElementById('loading').style.display = 'none';
+                showError(error.message);
+            }
+        }
+
+        // Add event listener for summarize playlist button
+        document.getElementById('summarizePlaylistBtn').addEventListener('click', () => {
+            summarizePlaylist();
+        });
     </script>
 </body>
 </html> 

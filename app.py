@@ -15,7 +15,6 @@ import ollama
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 import traceback
-from sentence_transformers import CrossEncoder
 
 # Load environment variables from .env file
 load_dotenv()
@@ -47,67 +46,108 @@ collection = chroma_client.get_or_create_collection(
     embedding_function=sentence_transformer_ef
 )
 
-# Initialize reranker
-reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v1')
+# Initialize reranker (optional)
+try:
+    from sentence_transformers import CrossEncoder
+    print("Initializing cross-encoder reranker...")
+    # Try with a more reliably available model
+    reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-4-v2', max_length=512)
+    USE_RERANKER = True
+    print("Reranker initialized successfully!")
+except Exception as e:
+    print(f"Warning: Could not initialize reranker: {str(e)}")
+    print("Will use simpler retrieval method without reranking")
+    USE_RERANKER = False
 
 # Initialize Whisper model
 whisper_model = None  # Lazy loading to save memory
 
 # Initialize text splitter with very small chunks and more overlap
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=550,  # Very small chunks
-    chunk_overlap=150,
+    chunk_size=1000,  # Very small chunks
+    chunk_overlap=300,
     length_function=len,
     separators=["\n\n", "\n", " ", ""]
 )
 
-# Function to extract video ID from URL
+# Function to extract video ID or playlist ID from URL
 def extract_video_id(youtube_url):
     """
-    Extract video ID from various YouTube URL formats:
+    Extract video ID or playlist ID from various YouTube URL formats.
+    Returns a tuple: (type, id) where type is 'video' or 'playlist'.
+    Returns (None, None) if the URL is invalid or not recognized.
+
+    Handles:
     - youtube.com/watch?v=...
     - youtu.be/...
     - youtube.com/shorts/...
     - youtube.com/embed/...
     - youtube.com/v/...
+    - youtube.com/playlist?list=...
     """
     if not youtube_url:
-        return None
-        
+        return None, None
+
     # Remove any whitespace and get the base URL
     youtube_url = youtube_url.strip()
-    
+
     # Handle URLs with or without protocol
     if youtube_url.startswith('//'):
         youtube_url = 'https:' + youtube_url
     elif not youtube_url.startswith(('http://', 'https://')):
         youtube_url = 'https://' + youtube_url
-    
+
     try:
         # Parse the URL
         parsed_url = urlparse(youtube_url)
         
-        # Handle youtu.be URLs
+        # Get query parameters
+        query_params = parse_qs(parsed_url.query)
+        
+        # First check if it's a playlist URL
+        if 'list' in query_params and parsed_url.netloc in ['youtube.com', 'www.youtube.com']:
+            playlist_id = query_params['list'][0]
+            # Basic validation - playlist IDs are typically about 30+ characters with alpha and numeric
+            if len(playlist_id) > 10:
+                print(f"Detected playlist ID: {playlist_id}")
+                return 'playlist', playlist_id
+
+        # Then handle video URLs
+        # Handle youtu.be URLs (always videos)
         if parsed_url.netloc == 'youtu.be':
-            return parsed_url.path.strip('/')
-            
+            video_id = parsed_url.path.strip('/')
+            if video_id:
+                return 'video', video_id
+
         # Handle various youtube.com formats
         if parsed_url.netloc in ['youtube.com', 'www.youtube.com']:
-            # Handle /watch URLs
+            # Handle /watch URLs 
             if parsed_url.path == '/watch':
-                query = parse_qs(parsed_url.query)
-                return query.get('v', [None])[0]
-                
+                if 'v' in query_params:
+                    video_id = query_params['v'][0]
+                    if video_id:
+                        return 'video', video_id
+
             # Handle /shorts/, /embed/, and /v/ URLs
             for path_prefix in ['/shorts/', '/embed/', '/v/']:
                 if parsed_url.path.startswith(path_prefix):
-                    return parsed_url.path.replace(path_prefix, '').split('/')[0]
-        
-        return None
-        
+                    video_id = parsed_url.path.replace(path_prefix, '').split('/')[0]
+                    if video_id:
+                        return 'video', video_id
+            
+            # Handle /playlist URLs explicitly
+            if parsed_url.path == '/playlist' and 'list' in query_params:
+                playlist_id = query_params['list'][0]
+                if len(playlist_id) > 10:
+                    print(f"Detected playlist ID from /playlist path: {playlist_id}")
+                    return 'playlist', playlist_id
+
+        print(f"URL not recognized as valid YouTube video or playlist: {youtube_url}")
+        return None, None
+
     except Exception as e:
-        print(f"Error extracting video ID: {str(e)}")
-        return None
+        print(f"Error extracting ID from URL: {str(e)}")
+        return None, None
 
 # Function to get transcript with timestamps (if available)
 def get_youtube_transcript(video_id):
@@ -247,11 +287,23 @@ def transcribe_video(video_id):
 # Function to chunk transcript and add to database
 def process_transcript_for_rag(video_id, transcript, timestamps, title, youtube_url):
     try:
-        # Delete existing entries for this video
+        # Check if any existing entries for this video
         try:
-            collection.delete(ids=[f"{video_id}_chunk_{i}" for i in range(1000)])  # Attempt to delete potential old chunks
-        except:
-            pass  # Ignore if no entries exist
+            # First check if any chunks exist
+            result = collection.get(
+                where={"video_id": {"$eq": video_id}},
+                limit=1
+            )
+            if result and result["ids"]:
+                print(f"Found existing chunks for video {video_id}, deleting them...")
+                collection.delete(
+                    where={"video_id": {"$eq": video_id}}
+                )
+            else:
+                print(f"No existing chunks found for video {video_id}, skipping deletion")
+        except Exception as e:
+            print(f"Warning when checking/deleting existing chunks: {str(e)}")
+            # Continue anyway
         
         # Split transcript into chunks for better RAG
         chunks = text_splitter.split_text(transcript)
@@ -354,6 +406,57 @@ def check_model_available(model_name):
             print(f"Error checking model availability: {str(e)}")
         return False
 
+# Helper function to process a single video ID
+def _process_single_video(video_id, youtube_url, model_name):
+    """Internal function to process a single video.
+       Returns a dictionary with processing results or an error.
+    """
+    
+    # Check for Ollama and model availability (can be done once per request)
+    # Moved outside this function for efficiency in playlist processing
+
+    # Get video info (title)
+    video_title = f"Video {video_id}"
+    try:
+        with yt_dlp.YoutubeDL({"skip_download": True, "quiet": True, "no_warnings": True}) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            video_title = info.get('title', video_title)
+    except Exception as e:
+        print(f"Warning: Could not fetch title for {video_id}: {str(e)}")
+        # Continue processing even if title fetch fails
+
+    # 1. Try YouTube API transcript
+    transcript, timestamps = get_youtube_transcript(video_id)
+    source = "youtube_api"
+
+    # 2. If API fails, use Whisper
+    if not transcript:
+        print(f"YouTube API transcript failed for {video_id}, trying Whisper...")
+        transcript, timestamps, whisper_result = transcribe_video(video_id)
+        source = "whisper"
+        # Check if whisper returned an error string
+        if isinstance(whisper_result, str) and whisper_result.startswith("Error"):
+            return {"success": False, "video_id": video_id, "title": video_title, "error": whisper_result}
+        # If whisper returned a title, use it (might be more accurate)
+        if isinstance(whisper_result, str) and whisper_result and not whisper_result.startswith("Error"):
+            video_title = whisper_result 
+    
+    if not transcript or not timestamps:
+        return {"success": False, "video_id": video_id, "title": video_title, "error": "Failed to obtain transcript via API or Whisper"}
+    
+    # 3. Process transcript for RAG (chunking, embedding, storing)
+    success, result = process_transcript_for_rag(video_id, transcript, timestamps, video_title, youtube_url)
+    if not success:
+        return {"success": False, "video_id": video_id, "title": video_title, "error": f"Failed to process transcript: {result}"}
+
+    return {
+        "success": True,
+        "video_id": video_id,
+        "title": video_title,
+        "chunks": result, # Number of chunks created
+        "source": source
+    }
+
 # Define routes
 @app.route("/")
 def index():
@@ -388,62 +491,279 @@ def debug():
 @app.route("/process_video", methods=["POST"])
 def process_video():
     data = request.json
-    youtube_url = data.get("url")
-    if not youtube_url:
+    url = data.get("url")
+    if not url:
         return jsonify({"error": "No URL provided"}), 400
 
-    video_id = extract_video_id(youtube_url)
-    if not video_id:
+    url_type, object_id = extract_video_id(url)
+
+    if url_type is None:
         return jsonify({"error": "Invalid YouTube URL"}), 400
-    
-    # Check for Ollama
+
+    if url_type == 'playlist':
+        # Indicate that the playlist endpoint should be used
+        return jsonify({"error": "This is a playlist URL. Please use the /process_playlist endpoint."}), 400
+
+    # It's a video URL
+    video_id = object_id
+    # Construct the standard YouTube video URL for consistency, even if input was different format
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # Check for Ollama availability ONCE before processing
     if not check_ollama_available():
         return jsonify({"error": f"Ollama is not running at {OLLAMA_HOST}. Please start Ollama server."}), 500
 
-    # Check if model is available
+    # Check if the requested model is available ONCE
     model_name = data.get("model", OLLAMA_MODEL)
     if not check_model_available(model_name):
         return jsonify({
             "error": f"Model '{model_name}' not found in Ollama. Please run 'ollama pull {model_name}' first."
         }), 400
-    
-    # Get video info
-    video_title = f"Video {video_id}"
+
+    # Call the refactored processing function for the single video
+    result = _process_single_video(video_id, youtube_url, model_name)
+
+    if result["success"]:
+        # Return success details
+        return jsonify({
+            "message": "Video processed successfully",
+            "video_id": result["video_id"],
+            "title": result["title"],
+            "chunks": result["chunks"],
+            "source": result["source"]
+        })
+    else:
+        # Return error details, including video info if available
+        error_details = {"error": result["error"]}
+        if "video_id" in result: error_details["video_id"] = result["video_id"]
+        if "title" in result: error_details["title"] = result["title"]
+        return jsonify(error_details), 500
+
+@app.route("/process_playlist", methods=["POST"])
+def process_playlist():
+    data = request.json
+    url = data.get("url")
+    if not url:
+        return jsonify({"error": "No URL provided"}), 400
+
+    print(f"Received playlist URL: {url}")
+    url_type, object_id = extract_video_id(url)
+    print(f"URL type: {url_type}, Object ID: {object_id}")
+
+    if url_type is None:
+        return jsonify({"error": "Invalid YouTube URL"}), 400
+
+    if url_type == 'video':
+        # If a video URL is sent here, inform the user to use the correct endpoint
+        print(f"URL was detected as video, not playlist: {url}")
+        return jsonify({"error": "This is a video URL. Please use the /process_video endpoint."}), 400
+
+    # It's a playlist URL
+    playlist_id = object_id
+    playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+    print(f"Processing playlist URL: {playlist_url}")
+
+    # Check for Ollama availability ONCE before processing
+    if not check_ollama_available():
+        return jsonify({"error": f"Ollama is not running at {OLLAMA_HOST}. Please start Ollama server."}), 500
+
+    # Check if the requested model is available ONCE
+    model_name = data.get("model", OLLAMA_MODEL)
+    if not check_model_available(model_name):
+        return jsonify({
+            "error": f"Model '{model_name}' not found in Ollama. Please run 'ollama pull {model_name}' first."
+        }), 400
+
     try:
-        with yt_dlp.YoutubeDL({"skip_download": True}) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-            video_title = info.get('title', video_title)
-    except:
-        pass  # Ignore errors, we'll just use the default title
-    
-    # First try to get transcript via YouTube API
-    transcript, timestamps = get_youtube_transcript(video_id)
-    source = "youtube_api"
+        print(f"Fetching playlist info for: {playlist_url}")
+        # Use yt-dlp to get playlist entries without downloading media
+        ydl_opts = {
+            'extract_flat': True,  # Don't extract info for each video, just list them
+            'quiet': True,
+            'no_warnings': True,
+            'force_generic_extractor': False # Ensure it uses youtube extractor
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            playlist_info = ydl.extract_info(playlist_url, download=False)
 
-    # If no transcript, use Whisper
-    if not transcript:
-        transcript, timestamps, whisper_result = transcribe_video(video_id)
-        source = "whisper"
-        if isinstance(whisper_result, str) and whisper_result.startswith("Error"):
-            return jsonify({"error": whisper_result}), 500
-        if whisper_result and not video_title.startswith("Video "):
-            video_title = whisper_result
-    
-    if not transcript or not timestamps:
-        return jsonify({"error": "Failed to obtain transcript"}), 500
-    
-    # Process transcript for RAG
-    success, result = process_transcript_for_rag(video_id, transcript, timestamps, video_title, youtube_url)
-    if not success:
-        return jsonify({"error": f"Failed to process transcript: {result}"}), 500
+        if 'entries' not in playlist_info or not playlist_info['entries']:
+            return jsonify({"error": "Could not find any videos in the playlist or playlist is private/invalid."}), 404
 
-    return jsonify({
-        "message": "Processed successfully", 
-        "video_id": video_id,
-        "title": video_title,
-        "chunks": result,
-        "source": source
-    })
+        playlist_title = playlist_info.get('title', f"Playlist {playlist_id}")
+        video_entries = playlist_info['entries']
+        total_videos = len(video_entries)
+        print(f"Found {total_videos} videos in playlist '{playlist_title}'")
+
+        # First delete any existing entries for this playlist
+        try:
+            # First check if any chunks exist
+            result = collection.get(
+                where={"playlist_id": {"$eq": playlist_id}},
+                limit=1
+            )
+            if result and result["ids"]:
+                print(f"Found existing chunks for playlist {playlist_id}, deleting them...")
+                collection.delete(
+                    where={"playlist_id": {"$eq": playlist_id}}
+                )
+            else:
+                print(f"No existing chunks found for playlist {playlist_id}, skipping deletion")
+        except Exception as e:
+            print(f"Warning when checking/deleting existing playlist chunks: {str(e)}")
+            # Continue anyway
+
+        processed_count = 0
+        failed_count = 0
+        results_summary = []
+        all_chunks = []
+        all_metadatas = []
+        all_ids = []
+        
+        # Process each video in the playlist
+        for i, entry in enumerate(video_entries):
+            video_id = entry.get('id')
+            video_title_in_playlist = entry.get('title', f"Video {video_id}") # Title from playlist entry
+            video_idx = i + 1  # 1-based index in playlist
+            
+            # Get duration in seconds and format it
+            duration_seconds = entry.get('duration')
+            formatted_duration = "??:??"
+            if duration_seconds:
+                # Convert seconds to HH:MM:SS format
+                hours, remainder = divmod(int(duration_seconds), 3600)
+                minutes, seconds = divmod(remainder, 60)
+                formatted_duration = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            
+            if not video_id:
+                print(f"Skipping entry {video_idx}/{total_videos}: Missing video ID.")
+                failed_count += 1
+                results_summary.append({"status": "skipped", "reason": "Missing video ID", "entry_index": video_idx})
+                continue
+                
+            # Construct the standard video URL for processing consistency
+            standard_video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+            print(f"Processing video {video_idx}/{total_videos}: {video_id} ({video_title_in_playlist[:50]}...)")
+            
+            # Get video transcript
+            transcript, timestamps = get_youtube_transcript(video_id)
+            source = "youtube_api"
+            
+            # If YouTube API failed, try Whisper
+            if not transcript:
+                print(f"YouTube API transcript failed for {video_id}, trying Whisper...")
+                transcript, timestamps, whisper_result = transcribe_video(video_id)
+                source = "whisper"
+                if not transcript or not timestamps:
+                    print(f"Failed to get transcript for video {video_id}")
+                    failed_count += 1
+                    results_summary.append({
+                        "status": "failed", 
+                        "video_id": video_id,
+                        "title": video_title_in_playlist,
+                        "error": "Failed to obtain transcript"
+                    })
+                    continue
+            
+            # Process transcript
+            try:
+                # Split transcript into chunks
+                chunks = text_splitter.split_text(transcript)
+                
+                # Calculate positions for timestamps
+                total_len = len(transcript)
+                curr_pos = 0
+                chunk_positions = []
+                
+                # Calculate starting positions of each chunk in the full text
+                for chunk in chunks:
+                    chunk_positions.append(curr_pos / total_len)
+                    curr_pos += len(chunk)
+                
+                # Store chunks with metadata
+                for j, chunk in enumerate(chunks):
+                    position = chunk_positions[j]
+                    
+                    # Find closest timestamp for this chunk
+                    matching_timestamp = None
+                    for ts in timestamps:
+                        ts_pos = ts["start"] / timestamps[-1]["start"] if timestamps[-1]["start"] > 0 else 0
+                        if matching_timestamp is None or abs(ts_pos - position) < abs(matching_timestamp["start"] / timestamps[-1]["start"] - position):
+                            matching_timestamp = ts
+                    
+                    # Generate unique ID for this chunk
+                    chunk_id = f"{playlist_id}_video_{video_id}_chunk_{j}"
+                    
+                    # Add to collections for batch insertion
+                    all_ids.append(chunk_id)
+                    all_metadatas.append({
+                        "video_id": video_id,
+                        "playlist_id": playlist_id,
+                        "playlist_title": playlist_title,
+                        "video_title": video_title_in_playlist,
+                        "video_index": video_idx,
+                        "url": standard_video_url,
+                        "playlist_url": playlist_url,
+                        "chunk_id": j,
+                        "timestamp": matching_timestamp["start"] if matching_timestamp else 0,
+                        "formatted_time": matching_timestamp["formatted_time"] if matching_timestamp else "00:00:00",
+                        "duration": formatted_duration,
+                        "duration_seconds": duration_seconds,
+                        "text_preview": chunk[:100] + "..." if len(chunk) > 100 else chunk,
+                        "source": source,
+                        "is_playlist_chunk": True
+                    })
+                    all_chunks.append(chunk)
+                
+                processed_count += 1
+                results_summary.append({
+                    "status": "success", 
+                    "video_id": video_id,
+                    "title": video_title_in_playlist,
+                    "chunks": len(chunks),
+                    "index": video_idx,
+                    "source": source
+                })
+                
+            except Exception as e:
+                print(f"Error processing video {video_id}: {str(e)}")
+                failed_count += 1
+                results_summary.append({
+                    "status": "failed", 
+                    "video_id": video_id,
+                    "title": video_title_in_playlist,
+                    "error": str(e)
+                })
+        
+        # Insert all chunks in one batch operation
+        if all_chunks:
+            print(f"Inserting {len(all_chunks)} chunks into ChromaDB for playlist {playlist_id}")
+            collection.add(
+                ids=all_ids,
+                metadatas=all_metadatas,
+                documents=all_chunks
+            )
+        
+        # Return summary of playlist processing
+        return jsonify({
+            "message": f"Playlist processing complete for '{playlist_title}'",
+            "playlist_id": playlist_id,
+            "playlist_title": playlist_title,
+            "total_videos_in_playlist": total_videos,
+            "successfully_processed": processed_count,
+            "failed_or_skipped": failed_count,
+            "total_chunks": len(all_chunks),
+            "results": results_summary
+        })
+
+    except yt_dlp.utils.DownloadError as e:
+         # Handle specific yt-dlp errors like private playlists or invalid URLs
+        print(f"yt-dlp error processing playlist {playlist_url}: {str(e)}")
+        return jsonify({"error": f"Failed to fetch playlist information. It might be private, invalid, or unavailable. Error: {str(e)}"}), 404
+    except Exception as e:
+        print(f"Error processing playlist {playlist_url}: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({"error": f"An unexpected error occurred processing the playlist: {str(e)}"}), 500
 
 # Define prompt templates
 QA_PROMPT_TEMPLATE = """You are a highly knowledgeable AI assistant that provides accurate, detailed answers about YouTube video content.
@@ -498,11 +818,12 @@ SUMMARY:"""
 @app.route("/ask", methods=["POST"])
 def ask_question():
     data = request.json
-    video_id = data.get("video_id")
+    content_id = data.get("video_id")  # Can be either a video_id or playlist_id
+    content_type = data.get("type", "video")  # Either "video" or "playlist"
     question = data.get("question")
     model_name = data.get("model", OLLAMA_MODEL)
 
-    if not video_id or not question:
+    if not content_id or not question:
         return jsonify({"error": "Missing parameters"}), 400
     
     # Check if the user is asking for the current time/timestamp
@@ -531,16 +852,24 @@ def ask_question():
         }), 400
 
     try:
-        print(f"Querying ChromaDB for video_id: {video_id}")
+        print(f"Querying ChromaDB for {'playlist' if content_type == 'playlist' else 'video'} ID: {content_id}")
         
-        # First get all chunks for this video
+        # Set up the where filter based on content type
+        if content_type == "playlist":
+            filter_condition = {"playlist_id": content_id}
+            print(f"Looking for chunks with playlist_id = {content_id}")
+        else:
+            filter_condition = {"video_id": content_id}
+            print(f"Looking for chunks with video_id = {content_id}")
+        
+        # First get all chunks for this video or playlist
         all_chunks = collection.get(
-            where={"video_id": video_id},
+            where=filter_condition,
             include=["metadatas", "documents"]
         )
         
         if not all_chunks["documents"]:
-            return jsonify({"error": "No content found for this video ID"}), 404
+            return jsonify({"error": f"No content found for this {content_type} ID"}), 404
             
         # Filter out summaries manually
         filtered_docs = []
@@ -552,15 +881,16 @@ def ask_question():
                 filtered_metadatas.append(metadata)
         
         if not filtered_docs:
-            return jsonify({"error": "No transcript chunks found for this video"}), 404
+            return jsonify({"error": f"No transcript chunks found for this {content_type}"}), 404
             
-        print(f"Found {len(filtered_docs)} transcript chunks for video")
+        print(f"Found {len(filtered_docs)} transcript chunks")
         
         # Get initial candidates using vector search
         results = collection.query(
             query_texts=[question],
+            where=filter_condition,  # Use the same filter
             n_results=10,  # Get more candidates for reranking
-            include=["metadatas", "documents"]
+            include=["metadatas", "documents", "distances"]
         )
         
         print(f"Initial vector search returned {len(results['documents'][0])} chunks")
@@ -568,57 +898,115 @@ def ask_question():
         # Filter out summaries from query results
         filtered_results_docs = []
         filtered_results_metadatas = []
+        filtered_results_distances = []
         
         for i, metadata in enumerate(results["metadatas"][0]):
             if metadata.get("type") != "summary":
                 filtered_results_docs.append(results["documents"][0][i])
                 filtered_results_metadatas.append(metadata)
+                if "distances" in results and results["distances"]:
+                    filtered_results_distances.append(results["distances"][0][i])
         
         if not filtered_results_docs:
-            return jsonify({"error": "No relevant transcript chunks found for this question"}), 404
+            return jsonify({"error": f"No relevant transcript chunks found for this question"}), 404
             
-        print(f"After filtering, using {len(filtered_results_docs)} chunks for reranking")
-
-        # Prepare pairs for reranking
-        pairs = [(question, doc) for doc in filtered_results_docs]
+        print(f"After filtering, found {len(filtered_results_docs)} relevant chunks")
         
-        # Rerank the chunks
-        print("Reranking chunks...")
-        rerank_scores = reranker.predict(pairs)
-        
-        # Combine chunks with their scores and metadata
+        # Perform reranking if available, otherwise use distance-based ranking
         chunks_with_scores = []
-        for i, doc in enumerate(filtered_results_docs):
-            metadata = filtered_results_metadatas[i]
-            chunks_with_scores.append({
-                "text": doc,
-                "score": float(rerank_scores[i]),
-                "timestamp": float(metadata.get("timestamp", 0)),
-                "formatted_time": metadata.get("formatted_time", "00:00:00"),
-                "text_preview": metadata.get("text_preview", "")
-            })
         
-        # Sort by reranking score
-        chunks_with_scores.sort(key=lambda x: x["score"], reverse=True)
+        if USE_RERANKER:
+            # Prepare pairs for reranking
+            print("Using cross-encoder reranking...")
+            pairs = [(question, doc) for doc in filtered_results_docs]
+            
+            # Rerank the chunks
+            rerank_scores = reranker.predict(pairs)
+            
+            # Combine chunks with their scores and metadata
+            for i, doc in enumerate(filtered_results_docs):
+                metadata = filtered_results_metadatas[i]
+                
+                # Extra fields for playlist chunks
+                video_info = {}
+                if content_type == "playlist" and metadata.get("is_playlist_chunk", False):
+                    video_info = {
+                        "video_id": metadata.get("video_id", ""),
+                        "video_title": metadata.get("video_title", "Unknown Video"),
+                        "video_index": metadata.get("video_index", 0),
+                        "video_url": metadata.get("url", "")
+                    }
+                
+                chunks_with_scores.append({
+                    "text": doc,
+                    "score": float(rerank_scores[i]),
+                    "timestamp": float(metadata.get("timestamp", 0)),
+                    "formatted_time": metadata.get("formatted_time", "00:00:00"),
+                    "text_preview": metadata.get("text_preview", ""),
+                    **video_info  # Add video-specific info for playlists
+                })
+            
+            # Sort by reranking score (higher is better)
+            chunks_with_scores.sort(key=lambda x: x["score"], reverse=True)
+        else:
+            # Use distance-based scoring (lower distance is better)
+            print("Using distance-based ranking (no reranker)...")
+            for i, doc in enumerate(filtered_results_docs):
+                metadata = filtered_results_metadatas[i]
+                distance = filtered_results_distances[i] if filtered_results_distances else 1.0
+                
+                # Extra fields for playlist chunks
+                video_info = {}
+                if content_type == "playlist" and metadata.get("is_playlist_chunk", False):
+                    video_info = {
+                        "video_id": metadata.get("video_id", ""),
+                        "video_title": metadata.get("video_title", "Unknown Video"),
+                        "video_index": metadata.get("video_index", 0),
+                        "video_url": metadata.get("url", "")
+                    }
+                
+                chunks_with_scores.append({
+                    "text": doc,
+                    "score": 1.0 - float(distance),  # Convert distance to similarity score
+                    "timestamp": float(metadata.get("timestamp", 0)),
+                    "formatted_time": metadata.get("formatted_time", "00:00:00"),
+                    "text_preview": metadata.get("text_preview", ""),
+                    **video_info  # Add video-specific info for playlists
+                })
+            
+            # Sort by distance-based score (higher is better)
+            chunks_with_scores.sort(key=lambda x: x["score"], reverse=True)
         
-        # Select top chunks based on reranking scores
+        # Select top chunks based on scores
         selected_chunks = []
         timestamps = []
         
         # Use top 5 chunks after reranking
         for chunk in chunks_with_scores[:5]:
             selected_chunks.append(chunk["text"])
-            timestamps.append({
+            
+            timestamp_info = {
                 "time": chunk["timestamp"],
                 "formatted_time": chunk["formatted_time"],
                 "text_preview": chunk["text_preview"]
-            })
-            print(f"Selected chunk with score {chunk['score']:.4f}: {chunk['text_preview'][:50]}")
+            }
+            
+            # Add video info for playlist chunks
+            if content_type == "playlist" and "video_id" in chunk:
+                timestamp_info.update({
+                    "video_id": chunk.get("video_id", ""),
+                    "video_title": chunk.get("video_title", ""),
+                    "video_index": chunk.get("video_index", 0),
+                    "video_url": chunk.get("video_url", "")
+                })
+            
+            timestamps.append(timestamp_info)
+            print(f"Selected chunk with score {chunk.get('score', 0):.4f}: {chunk['text_preview'][:50]}")
 
         if not selected_chunks:
             return jsonify({"error": "Could not find relevant content for this question"}), 404
             
-        print(f"Selected {len(selected_chunks)} chunks after reranking")
+        print(f"Selected {len(selected_chunks)} chunks for response")
 
         # Combine chunks with paragraph breaks for better readability
         context = "\n\n".join(selected_chunks)
@@ -626,8 +1014,32 @@ def ask_question():
         # Generate answer
         start_time = time.time()
         
-        # Format prompt using the template
-        prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
+        # Choose the appropriate prompt template
+        if content_type == "playlist":
+            # Use playlist-specific prompt
+            prompt = """You are a highly knowledgeable AI assistant that provides accurate, detailed answers about YouTube video playlists.
+
+Your task is to answer questions about a playlist using ONLY the provided transcript segments. Follow these guidelines:
+
+1. Use ONLY the information from the provided transcript segments
+2. If the exact information isn't in the segments, say "This information is not in the playlist segments provided."
+3. If you can make a reasonable inference from the segments, start with "Based on the context..."
+4. When referring to specific videos, mention which video in the playlist contains the information
+5. Keep answers concise but complete
+
+SPECIAL INSTRUCTION FOR VIDEO AND TIME REFERENCES:
+When referring to a specific moment in a video in your answer, ALWAYS format it as "Video X [HH:MM:SS]" (e.g., "Video 3 [01:24:30]").
+This exact format is crucial as it will be automatically detected and converted to clickable links for viewers.
+
+TRANSCRIPT SEGMENTS:
+{context}
+
+QUESTION: {question}
+
+ANSWER:""".format(context=context, question=question)
+        else:
+            # Use standard video prompt
+            prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
 
         print(f"Sending prompt to Ollama: {prompt[:200]}...")  # Print first 200 chars of prompt
 
@@ -670,6 +1082,7 @@ def ask_question():
         return jsonify({
             "answer": answer_text,
             "timestamps": timestamps,
+            "content_type": content_type,
             "time_taken": round(end_time - start_time, 2)
         })
             
@@ -831,6 +1244,327 @@ def summarize_video():
         print(f"Full error details: {traceback.format_exc()}")
         return jsonify({"error": f"Error generating summary: {str(e)}"}), 500
 
+@app.route("/summarize_playlist", methods=["POST"])
+def summarize_playlist():
+    """Endpoint to generate a hierarchical summary of a playlist"""
+    data = request.json
+    playlist_id = data.get("playlist_id")
+    model_name = data.get("model", OLLAMA_MODEL)
+    force_regenerate = data.get("force_regenerate", False)
+
+    if not playlist_id:
+        return jsonify({"error": "Missing playlist_id"}), 400
+    
+    # Check for Ollama
+    if not check_ollama_available():
+        return jsonify({"error": f"Ollama is not running at {OLLAMA_HOST}. Please start Ollama server."}), 500
+    
+    # Check if model is available
+    if not check_model_available(model_name):
+        return jsonify({
+            "error": f"Model '{model_name}' not found in Ollama. Please run 'ollama pull {model_name}' first."
+        }), 400
+    
+    # First check if we already have a cached summary (unless force_regenerate is true)
+    if not force_regenerate:
+        try:
+            cached_results = collection.get(
+                where={
+                    "$and": [
+                        {"playlist_id": {"$eq": playlist_id}},
+                        {"type": {"$eq": "playlist_summary"}}
+                    ]
+                },
+                include=["documents", "metadatas"]
+            )
+            
+            if cached_results["documents"] and len(cached_results["documents"]) > 0:
+                # Return cached summary if it exists
+                print(f"Returning cached playlist summary for {playlist_id}")
+                
+                metadata = cached_results["metadatas"][0]
+                playlist_title = metadata.get("playlist_title", f"Playlist {playlist_id}")
+                
+                try:
+                    # Parse the cached summary which is stored as JSON
+                    summary_data = json.loads(cached_results["documents"][0])
+                    summary_data["cached"] = True
+                    summary_data["playlist_title"] = playlist_title
+                    return jsonify(summary_data)
+                except json.JSONDecodeError:
+                    # If parsing fails, just return the raw text
+                    return jsonify({
+                        "overview": cached_results["documents"][0],
+                        "cached": True,
+                        "created_at": metadata.get("created_at", "unknown"),
+                        "playlist_title": playlist_title
+                    })
+        except Exception as e:
+            print(f"Error checking for cached playlist summary: {str(e)}")
+            # Continue with generating a new summary
+
+    # Get all chunks for this playlist
+    try:
+        all_chunks = collection.get(
+            where={"playlist_id": playlist_id},
+            include=["metadatas", "documents"]
+        )
+        
+        if not all_chunks["documents"]:
+            return jsonify({"error": "No content found for this playlist ID"}), 404
+        
+        # Group chunks by video_id to process each video separately
+        videos = {}
+        playlist_title = ""
+        
+        for i, metadata in enumerate(all_chunks["metadatas"]):
+            # Skip summary chunks
+            if metadata.get("type") == "summary":
+                continue
+                
+            video_id = metadata.get("video_id")
+            if not video_id:
+                continue
+                
+            # Get playlist title from any chunk (should be same for all)
+            if not playlist_title and "playlist_title" in metadata:
+                playlist_title = metadata["playlist_title"]
+            
+            # Group by video
+            if video_id not in videos:
+                videos[video_id] = {
+                    "id": video_id,
+                    "title": metadata.get("video_title", f"Video {video_id}"),
+                    "url": metadata.get("url", f"https://www.youtube.com/watch?v={video_id}"),
+                    "index": metadata.get("video_index", 0),
+                    "chunks": [],
+                    "metadatas": []
+                }
+            
+            videos[video_id]["chunks"].append(all_chunks["documents"][i])
+            videos[video_id]["metadatas"].append(metadata)
+        
+        if not videos:
+            return jsonify({"error": "No valid video chunks found in this playlist"}), 404
+        
+        # Sort videos by their index in the playlist
+        sorted_videos = sorted(videos.values(), key=lambda v: v["index"])
+        
+        print(f"Found {len(sorted_videos)} videos to summarize in playlist")
+        
+        # Generate the playlist overview summary first
+        # We'll sample content from each video to create a representative overview
+        playlist_context = []
+        
+        for video in sorted_videos:
+            # Include a header for each video
+            playlist_context.append(f"Video {video['index']}: {video['title']}")
+            
+            # Sample some text from this video (first, middle, and last chunk)
+            chunks = video["chunks"]
+            if len(chunks) >= 3:
+                playlist_context.append(chunks[0])
+                playlist_context.append(chunks[len(chunks)//2])
+                playlist_context.append(chunks[-1])
+            else:
+                # If less than 3 chunks, include all
+                playlist_context.extend(chunks)
+            
+            # Add separator
+            playlist_context.append("\n---\n")
+        
+        # Create the overview prompt
+        overview_prompt = f"""You are tasked with creating a comprehensive overview summary of a YouTube playlist.
+
+PLAYLIST TITLE: {playlist_title}
+
+Below are sample excerpts from {len(sorted_videos)} videos in this playlist. Use these to understand the overall themes, purpose, and progression of the playlist.
+
+{" ".join(playlist_context)}
+
+Please provide:
+1. A concise yet comprehensive overview of the entire playlist (200-300 words)
+2. The main themes or topics covered
+3. How the videos relate to each other and progress through the topics
+4. The overall purpose or goal of the playlist
+
+FORMAT YOUR RESPONSE IN HTML with appropriate headings, paragraphs, and bullet points for better readability.
+"""
+
+        # Generate overview with Ollama
+        overview_response = ollama.chat(
+            model=model_name, 
+            messages=[{"role": "user", "content": overview_prompt}]
+        )
+        
+        overview_html = overview_response.message.content if hasattr(overview_response.message, "content") else ""
+        
+        # Now generate individual video summaries
+        video_summaries = []
+        
+        for video in sorted_videos:
+            print(f"Generating summary for video {video['index']}: {video['title']}")
+            
+            # Combine chunks with paragraph breaks for better readability
+            video_text = "\n\n".join(video["chunks"])
+            
+            # Create the video summary prompt
+            video_prompt = f"""You are tasked with creating a concise but informative summary of a single video from a YouTube playlist.
+
+VIDEO TITLE: {video['title']}
+VIDEO POSITION: Video {video['index']} in the playlist
+
+TRANSCRIPT CONTENT:
+{video_text}
+
+Please provide:
+1. A concise summary of this specific video (100-150 words)
+2. 3-5 key points or takeaways from the video
+
+FORMAT YOUR RESPONSE AS JSON with the following structure:
+{{
+    "summary": "The summary text...",
+    "key_points": ["Point 1", "Point 2", "Point 3"]
+}}
+"""
+
+            try:
+                # Generate summary with Ollama
+                video_response = ollama.chat(
+                    model=model_name, 
+                    messages=[{"role": "user", "content": video_prompt}]
+                )
+                
+                video_summary_text = video_response.message.content if hasattr(video_response.message, "content") else ""
+                
+                # Try to parse JSON response
+                try:
+                    summary_json = json.loads(video_summary_text)
+                    summary_json["title"] = video["title"]
+                    summary_json["url"] = video["url"]
+                    summary_json["index"] = video["index"]
+                    summary_json["thumbnail"] = f"https://img.youtube.com/vi/{video['id']}/mqdefault.jpg"
+                    
+                    # Try to extract duration if available
+                    for metadata in video["metadatas"]:
+                        if "duration" in metadata:
+                            summary_json["duration"] = metadata["duration"]
+                            break
+                    
+                    # If no duration found, try to get from yt-dlp
+                    if "duration" not in summary_json:
+                        try:
+                            with yt_dlp.YoutubeDL({"skip_download": True, "quiet": True, "no_warnings": True}) as ydl:
+                                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video['id']}", download=False)
+                                duration_seconds = info.get('duration')
+                                if duration_seconds:
+                                    hours, remainder = divmod(int(duration_seconds), 3600)
+                                    minutes, seconds = divmod(remainder, 60)
+                                    summary_json["duration"] = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                        except Exception as e:
+                            print(f"Error getting duration for video {video['id']}: {str(e)}")
+                    
+                    video_summaries.append(summary_json)
+                except json.JSONDecodeError:
+                    # If not valid JSON, use the raw text
+                    fallback_summary = {
+                        "title": video["title"],
+                        "url": video["url"],
+                        "index": video["index"],
+                        "summary": video_summary_text,
+                        "key_points": [],
+                        "thumbnail": f"https://img.youtube.com/vi/{video['id']}/mqdefault.jpg"
+                    }
+                    
+                    # Try to extract duration if available
+                    for metadata in video["metadatas"]:
+                        if "duration" in metadata:
+                            fallback_summary["duration"] = metadata["duration"]
+                            break
+                    
+                    # If no duration found, try to get from yt-dlp
+                    if "duration" not in fallback_summary:
+                        try:
+                            with yt_dlp.YoutubeDL({"skip_download": True, "quiet": True, "no_warnings": True}) as ydl:
+                                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video['id']}", download=False)
+                                duration_seconds = info.get('duration')
+                                if duration_seconds:
+                                    hours, remainder = divmod(int(duration_seconds), 3600)
+                                    minutes, seconds = divmod(remainder, 60)
+                                    fallback_summary["duration"] = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                        except Exception as e:
+                            print(f"Error getting duration for video {video['id']}: {str(e)}")
+                    
+                    video_summaries.append(fallback_summary)
+            except Exception as e:
+                print(f"Error generating summary for video {video['index']}: {str(e)}")
+                # Add a placeholder if summary generation fails
+                error_summary = {
+                    "title": video["title"],
+                    "url": video["url"],
+                    "index": video["index"],
+                    "summary": "Unable to generate summary for this video.",
+                    "key_points": [],
+                    "thumbnail": f"https://img.youtube.com/vi/{video['id']}/mqdefault.jpg"
+                }
+                
+                # Try to extract duration if available
+                for metadata in video["metadatas"]:
+                    if "duration" in metadata:
+                        error_summary["duration"] = metadata["duration"]
+                        break
+                
+                # If no duration found, try to get from yt-dlp (but do it silently)
+                if "duration" not in error_summary:
+                    try:
+                        with yt_dlp.YoutubeDL({"skip_download": True, "quiet": True, "no_warnings": True}) as ydl:
+                            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video['id']}", download=False)
+                            duration_seconds = info.get('duration')
+                            if duration_seconds:
+                                hours, remainder = divmod(int(duration_seconds), 3600)
+                                minutes, seconds = divmod(remainder, 60)
+                                error_summary["duration"] = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                    except:
+                        # Just silently continue if there's an error
+                        pass
+                
+                video_summaries.append(error_summary)
+        
+        # Prepare the final results
+        timestamp = datetime.now().isoformat()
+        summary_data = {
+            "overview": overview_html,
+            "overview_html": overview_html,
+            "video_summaries": video_summaries,
+            "playlist_title": playlist_title,
+            "created_at": timestamp,
+            "cached": False
+        }
+        
+        # Store the summary in the collection for future use
+        try:
+            summary_json = json.dumps(summary_data)
+            collection.upsert(
+                ids=[f"{playlist_id}_playlist_summary"],
+                metadatas=[{
+                    "playlist_id": playlist_id,
+                    "playlist_title": playlist_title,
+                    "type": "playlist_summary",
+                    "created_at": timestamp
+                }],
+                documents=[summary_json]
+            )
+            print(f"Cached playlist summary for {playlist_id}")
+        except Exception as e:
+            print(f"Error caching playlist summary: {str(e)}")
+        
+        return jsonify(summary_data)
+        
+    except Exception as e:
+        print(f"Error generating playlist summary: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({"error": f"Error generating playlist summary: {str(e)}"}), 500
+
 @app.route("/get_available_models", methods=["GET"])
 def get_available_models():
     try:
@@ -847,21 +1581,40 @@ def get_available_models():
 @app.route("/get_processed_videos", methods=["GET"])
 def get_processed_videos():
     try:
-        # Query for unique video IDs
+        # Query for unique video IDs and playlists
         all_metadatas = collection.get()["metadatas"]
         processed_videos = {}
+        processed_playlists = {}
         
         for metadata in all_metadatas:
-            if "video_id" in metadata and "title" in metadata and "url" in metadata:
+            # Handle regular videos
+            if "video_id" in metadata and "title" in metadata and "url" in metadata and not metadata.get("is_playlist_chunk", False):
                 video_id = metadata["video_id"]
                 if video_id not in processed_videos:
                     processed_videos[video_id] = {
                         "id": video_id,
                         "title": metadata["title"],
-                        "url": metadata["url"]
+                        "url": metadata["url"],
+                        "type": "video"
+                    }
+            
+            # Handle playlist entries
+            if "playlist_id" in metadata and metadata.get("is_playlist_chunk", False):
+                playlist_id = metadata["playlist_id"]
+                if playlist_id not in processed_playlists:
+                    processed_playlists[playlist_id] = {
+                        "id": playlist_id,
+                        "title": metadata.get("playlist_title", f"Playlist {playlist_id}"),
+                        "url": metadata.get("playlist_url", f"https://www.youtube.com/playlist?list={playlist_id}"),
+                        "type": "playlist"
                     }
         
-        return jsonify({"videos": list(processed_videos.values())})
+        # Combine and return both types
+        all_items = list(processed_videos.values()) + list(processed_playlists.values())
+        return jsonify({"videos": list(processed_videos.values()), 
+                        "playlists": list(processed_playlists.values()),
+                        "all": all_items})
+                        
     except Exception as e:
         return jsonify({"error": f"Error fetching videos: {str(e)}"}), 500
 
@@ -877,21 +1630,30 @@ def get_config():
 
 @app.route("/get_chunks", methods=["GET"])
 def get_chunks():
-    """Endpoint to retrieve all chunks for a specific video"""
-    video_id = request.args.get("video_id")
+    """Endpoint to retrieve all chunks for a specific video or playlist"""
+    content_id = request.args.get("video_id")  # Can be a video_id or playlist_id
+    content_type = request.args.get("type", "video")  # Either "video" or "playlist"
     
-    if not video_id:
-        return jsonify({"error": "Missing video_id parameter"}), 400
+    if not content_id:
+        return jsonify({"error": "Missing ID parameter"}), 400
     
     try:
-        # Get all chunks for this video
+        # Set up the where filter based on content type
+        if content_type == "playlist":
+            filter_condition = {"playlist_id": content_id}
+            print(f"Looking for chunks with playlist_id = {content_id}")
+        else:
+            filter_condition = {"video_id": content_id}
+            print(f"Looking for chunks with video_id = {content_id}")
+            
+        # Get all chunks for this video/playlist
         all_chunks = collection.get(
-            where={"video_id": video_id},
+            where=filter_condition,
             include=["metadatas", "documents"]
         )
         
         if not all_chunks["documents"]:
-            return jsonify({"error": "No chunks found for this video ID"}), 404
+            return jsonify({"error": f"No chunks found for this {content_type} ID"}), 404
         
         # Prepare response with chunks and their metadata, filtering out summaries
         chunks = []
@@ -900,22 +1662,37 @@ def get_chunks():
                 metadata = all_chunks["metadatas"][i]
                 # Only include if it's not a summary document
                 if metadata.get("type") != "summary":
-                    chunks.append({
+                    chunk_data = {
                         "id": len(chunks),  # Use new index for filtered list
                         "text": doc,
                         "timestamp": metadata.get("timestamp", 0),
                         "formatted_time": metadata.get("formatted_time", "00:00:00"),
                         "metadata": metadata
-                    })
+                    }
+                    
+                    # Add additional metadata for playlist chunks
+                    if content_type == "playlist" and metadata.get("is_playlist_chunk", False):
+                        chunk_data.update({
+                            "video_id": metadata.get("video_id", ""),
+                            "video_title": metadata.get("video_title", "Unknown Video"),
+                            "video_index": metadata.get("video_index", 0),
+                            "video_url": metadata.get("url", "")
+                        })
+                        
+                    chunks.append(chunk_data)
         
         if not chunks:
-            return jsonify({"error": "No transcript chunks found for this video"}), 404
+            return jsonify({"error": f"No transcript chunks found for this {content_type}"}), 404
             
-        # Sort chunks by timestamp
-        chunks.sort(key=lambda x: x["timestamp"])
+        # Sort chunks by video index first (for playlists) then by timestamp
+        if content_type == "playlist":
+            chunks.sort(key=lambda x: (x.get("video_index", 0), x["timestamp"]))
+        else:
+            chunks.sort(key=lambda x: x["timestamp"])
         
         return jsonify({
-            "video_id": video_id,
+            "id": content_id,
+            "type": content_type,
             "chunks": chunks,
             "count": len(chunks)
         })
@@ -927,23 +1704,87 @@ def get_chunks():
 
 @app.route("/delete_video", methods=["POST"])
 def delete_video():
-    """Endpoint to delete a processed video and all its data"""
+    """Endpoint to delete a processed video or playlist and all its data"""
     data = request.json
     video_id = data.get("video_id")
+    content_type = data.get("type", "video")
     
     if not video_id:
         return jsonify({"error": "Missing video_id parameter"}), 400
     
     try:
-        # Delete all chunks for this video
-        collection.delete(
-            where={"video_id": video_id}
-        )
+        # Delete based on content type (video or playlist)
+        if content_type == "playlist":
+            # Check if playlist chunks exist first
+            result = collection.get(
+                where={"playlist_id": {"$eq": video_id}},
+                limit=1
+            )
+            if result and result["ids"]:
+                # Delete all chunks for this playlist
+                collection.delete(
+                    where={"playlist_id": {"$eq": video_id}}
+                )
+                print(f"Deleted playlist {video_id} data")
+            else:
+                print(f"No data found for playlist {video_id}, nothing to delete")
+        else:
+            # Check if video chunks exist first
+            result = collection.get(
+                where={"video_id": {"$eq": video_id}},
+                limit=1
+            )
+            if result and result["ids"]:
+                # Delete all chunks for this video
+                collection.delete(
+                    where={"video_id": {"$eq": video_id}}
+                )
+                print(f"Deleted video {video_id} data")
+            else:
+                print(f"No data found for video {video_id}, nothing to delete")
         
-        return jsonify({"success": True, "message": f"Video {video_id} deleted successfully"})
+        return jsonify({"success": True, "message": f"{content_type.capitalize()} {video_id} deleted successfully"})
     except Exception as e:
-        print(f"Error deleting video: {str(e)}")
-        return jsonify({"error": f"Failed to delete video: {str(e)}"}), 500
+        print(f"Error deleting {content_type}: {str(e)}")
+        return jsonify({"error": f"Failed to delete {content_type}: {str(e)}"}), 500
+
+@app.route("/debug_url", methods=["POST"])
+def debug_url():
+    """Endpoint to debug URL parsing"""
+    data = request.json
+    url = data.get("url")
+    if not url:
+        return jsonify({"error": "No URL provided"}), 400
+    
+    url_type, object_id = extract_video_id(url)
+    
+    # Parse URL for more details
+    try:
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+        
+        return jsonify({
+            "url": url,
+            "url_type": url_type,
+            "object_id": object_id,
+            "parsed": {
+                "scheme": parsed_url.scheme,
+                "netloc": parsed_url.netloc,
+                "path": parsed_url.path,
+                "query": query_params,
+                "fragment": parsed_url.fragment
+            },
+            "is_playlist_path": parsed_url.path == '/playlist',
+            "has_list_param": 'list' in query_params,
+            "list_value": query_params.get('list', [None])[0]
+        })
+    except Exception as e:
+        return jsonify({
+            "url": url,
+            "url_type": url_type,
+            "object_id": object_id,
+            "error": str(e)
+        })
 
 if __name__ == "__main__":
     if DEBUG_MODE:
