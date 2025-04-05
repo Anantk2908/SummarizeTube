@@ -55,8 +55,8 @@ whisper_model = None  # Lazy loading to save memory
 
 # Initialize text splitter with very small chunks and more overlap
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,  # Very small chunks
-    chunk_overlap=100,
+    chunk_size=550,  # Very small chunks
+    chunk_overlap=150,
     length_function=len,
     separators=["\n\n", "\n", " ", ""]
 )
