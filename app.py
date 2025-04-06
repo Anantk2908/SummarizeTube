@@ -87,16 +87,16 @@ def extract_video_id(youtube_url):
     """
     if not youtube_url:
         return None, None
-
+        
     # Remove any whitespace and get the base URL
     youtube_url = youtube_url.strip()
-
+    
     # Handle URLs with or without protocol
     if youtube_url.startswith('//'):
         youtube_url = 'https:' + youtube_url
     elif not youtube_url.startswith(('http://', 'https://')):
         youtube_url = 'https://' + youtube_url
-
+    
     try:
         # Parse the URL
         parsed_url = urlparse(youtube_url)
@@ -118,16 +118,16 @@ def extract_video_id(youtube_url):
             video_id = parsed_url.path.strip('/')
             if video_id:
                 return 'video', video_id
-
+            
         # Handle various youtube.com formats
         if parsed_url.netloc in ['youtube.com', 'www.youtube.com']:
-            # Handle /watch URLs 
+            # Handle /watch URLs
             if parsed_url.path == '/watch':
                 if 'v' in query_params:
                     video_id = query_params['v'][0]
                     if video_id:
                         return 'video', video_id
-
+                
             # Handle /shorts/, /embed/, and /v/ URLs
             for path_prefix in ['/shorts/', '/embed/', '/v/']:
                 if parsed_url.path.startswith(path_prefix):
@@ -144,7 +144,7 @@ def extract_video_id(youtube_url):
 
         print(f"URL not recognized as valid YouTube video or playlist: {youtube_url}")
         return None, None
-
+        
     except Exception as e:
         print(f"Error extracting ID from URL: {str(e)}")
         return None, None
@@ -363,6 +363,58 @@ def process_transcript_for_rag(video_id, transcript, timestamps, title, youtube_
         print(f"Error processing transcript: {str(e)}")
         return False, str(e)
 
+# Add a robust query function before check_ollama_available() to handle potential ChromaDB errors
+def safe_chroma_query(query_text, filter_condition, n_results=10):
+    """
+    Perform a ChromaDB query with robust error handling and fallbacks.
+    Returns a tuple of (documents, metadatas, distances) or (None, None, None) if completely failed.
+    """
+    try:
+        # First try with standard query
+        results = collection.query(
+            query_texts=[query_text],
+            where=filter_condition,
+            n_results=n_results,
+            include=["metadatas", "documents", "distances"]
+        )
+        
+        if results["documents"] and len(results["documents"][0]) > 0:
+            return results["documents"][0], results["metadatas"][0], results["distances"][0] if "distances" in results else None
+    except Exception as e:
+        print(f"Standard ChromaDB query failed: {str(e)}. Trying fallbacks...")
+    
+    # If standard query fails, try with smaller result set
+    try:
+        results = collection.query(
+            query_texts=[query_text],
+            where=filter_condition,
+            n_results=min(5, n_results),  # Try with fewer results
+            include=["metadatas", "documents", "distances"]
+        )
+        
+        if results["documents"] and len(results["documents"][0]) > 0:
+            print("Fallback query with smaller result set succeeded")
+            return results["documents"][0], results["metadatas"][0], results["distances"][0] if "distances" in results else None
+    except Exception as e:
+        print(f"Smaller query fallback failed: {str(e)}. Trying get all...")
+    
+    # If all queries fail, fall back to just getting all documents with the filter
+    try:
+        all_results = collection.get(
+            where=filter_condition,
+            include=["metadatas", "documents"]
+        )
+        
+        if all_results["documents"] and len(all_results["documents"]) > 0:
+            print(f"Query fallback: using get() with {len(all_results['documents'])} documents")
+            # Take the first n_results documents (or all if fewer)
+            count = min(n_results, len(all_results["documents"]))
+            return all_results["documents"][:count], all_results["metadatas"][:count], None
+    except Exception as e:
+        print(f"All ChromaDB query fallbacks failed: {str(e)}")
+    
+    return None, None, None
+
 # Check if Ollama is running
 def check_ollama_available():
     try:
@@ -499,7 +551,7 @@ def process_video():
 
     if url_type is None:
         return jsonify({"error": "Invalid YouTube URL"}), 400
-
+    
     if url_type == 'playlist':
         # Indicate that the playlist endpoint should be used
         return jsonify({"error": "This is a playlist URL. Please use the /process_playlist endpoint."}), 400
@@ -519,19 +571,19 @@ def process_video():
         return jsonify({
             "error": f"Model '{model_name}' not found in Ollama. Please run 'ollama pull {model_name}' first."
         }), 400
-
+    
     # Call the refactored processing function for the single video
     result = _process_single_video(video_id, youtube_url, model_name)
 
     if result["success"]:
         # Return success details
         return jsonify({
-            "message": "Video processed successfully",
-            "video_id": result["video_id"],
-            "title": result["title"],
-            "chunks": result["chunks"],
-            "source": result["source"]
-        })
+                "message": "Video processed successfully",
+                "video_id": result["video_id"],
+                "title": result["title"],
+                "chunks": result["chunks"],
+                "source": result["source"]
+            })
     else:
         # Return error details, including video info if available
         error_details = {"error": result["error"]}
@@ -566,7 +618,7 @@ def process_playlist():
     # Check for Ollama availability ONCE before processing
     if not check_ollama_available():
         return jsonify({"error": f"Ollama is not running at {OLLAMA_HOST}. Please start Ollama server."}), 500
-
+    
     # Check if the requested model is available ONCE
     model_name = data.get("model", OLLAMA_MODEL)
     if not check_model_available(model_name):
@@ -730,7 +782,7 @@ def process_playlist():
                 failed_count += 1
                 results_summary.append({
                     "status": "failed", 
-                    "video_id": video_id,
+                                "video_id": video_id,
                     "title": video_title_in_playlist,
                     "error": str(e)
                 })
@@ -886,31 +938,22 @@ def ask_question():
         print(f"Found {len(filtered_docs)} transcript chunks")
         
         # Get initial candidates using vector search
-        results = collection.query(
-            query_texts=[question],
-            where=filter_condition,  # Use the same filter
-            n_results=10,  # Get more candidates for reranking
-            include=["metadatas", "documents", "distances"]
-        )
-        
-        print(f"Initial vector search returned {len(results['documents'][0])} chunks")
-        
-        # Filter out summaries from query results
-        filtered_results_docs = []
-        filtered_results_metadatas = []
-        filtered_results_distances = []
-        
-        for i, metadata in enumerate(results["metadatas"][0]):
-            if metadata.get("type") != "summary":
-                filtered_results_docs.append(results["documents"][0][i])
-                filtered_results_metadatas.append(metadata)
-                if "distances" in results and results["distances"]:
-                    filtered_results_distances.append(results["distances"][0][i])
-        
-        if not filtered_results_docs:
-            return jsonify({"error": f"No relevant transcript chunks found for this question"}), 404
+        try:
+            print(f"Performing robust query for: {question}")
+            filtered_results_docs, filtered_results_metadatas, filtered_results_distances = safe_chroma_query(
+                question,
+                filter_condition,
+                n_results=10
+            )
             
-        print(f"After filtering, found {len(filtered_results_docs)} relevant chunks")
+            if not filtered_results_docs or not filtered_results_metadatas:
+                return jsonify({"error": f"No relevant transcript chunks found for this question"}), 404
+                
+            print(f"Query returned {len(filtered_results_docs)} relevant chunks")
+                
+        except Exception as e:
+            print(f"Error in safe query: {str(e)}")
+            return jsonify({"error": f"Error retrieving content: {str(e)}"}), 500
         
         # Perform reranking if available, otherwise use distance-based ranking
         chunks_with_scores = []
@@ -926,7 +969,6 @@ def ask_question():
             # Combine chunks with their scores and metadata
             for i, doc in enumerate(filtered_results_docs):
                 metadata = filtered_results_metadatas[i]
-                
                 # Extra fields for playlist chunks
                 video_info = {}
                 if content_type == "playlist" and metadata.get("is_playlist_chunk", False):
@@ -936,7 +978,7 @@ def ask_question():
                         "video_index": metadata.get("video_index", 0),
                         "video_url": metadata.get("url", "")
                     }
-                
+                    
                 chunks_with_scores.append({
                     "text": doc,
                     "score": float(rerank_scores[i]),
@@ -981,27 +1023,64 @@ def ask_question():
         selected_chunks = []
         timestamps = []
         
-        # Use top 5 chunks after reranking
-        for chunk in chunks_with_scores[:5]:
-            selected_chunks.append(chunk["text"])
+        # For playlists, ensure we get a diverse set of chunks from different videos
+        if content_type == "playlist":
+            # Group chunks by video_id
+            chunks_by_video = {}
+            for chunk in chunks_with_scores:
+                video_id = chunk.get("video_id", "unknown")
+                if video_id not in chunks_by_video:
+                    chunks_by_video[video_id] = []
+                chunks_by_video[video_id].append(chunk)
             
-            timestamp_info = {
-                "time": chunk["timestamp"],
-                "formatted_time": chunk["formatted_time"],
-                "text_preview": chunk["text_preview"]
-            }
+            # Select top chunks from each video (up to 2 per video, prioritizing the best scoring chunks)
+            video_chunks = []
+            for video_id, video_chunks_list in chunks_by_video.items():
+                # Sort chunks for this video by score
+                video_chunks_list.sort(key=lambda x: x["score"], reverse=True)
+                # Take up to 2 best chunks from this video
+                video_chunks.extend(video_chunks_list[:2])
             
-            # Add video info for playlist chunks
-            if content_type == "playlist" and "video_id" in chunk:
-                timestamp_info.update({
+            # Sort these selected chunks by score again and take the top 8 (or all if fewer)
+            video_chunks.sort(key=lambda x: x["score"], reverse=True)
+            selected_video_chunks = video_chunks[:8] if len(video_chunks) > 8 else video_chunks
+            
+            # Use these selected chunks
+            for chunk in selected_video_chunks:
+                # Extract video info before enhancing the chunk
+                video_index = chunk.get('video_index', 0)
+                video_title = chunk.get('video_title', 'Unknown')
+                formatted_time = chunk.get('formatted_time', '00:00:00')
+                
+                # Add video info header to each chunk
+                enhanced_chunk = f"[FROM VIDEO {video_index}: \"{video_title}\", TIMESTAMP: {formatted_time}]\n{chunk['text']}"
+                selected_chunks.append(enhanced_chunk)
+                
+                timestamp_info = {
+                    "time": chunk["timestamp"],
+                    "formatted_time": formatted_time,
+                    "text_preview": chunk["text_preview"],
                     "video_id": chunk.get("video_id", ""),
-                    "video_title": chunk.get("video_title", ""),
-                    "video_index": chunk.get("video_index", 0),
+                    "video_title": video_title,
+                    "video_index": video_index,
                     "video_url": chunk.get("video_url", "")
-                })
+                }
+                
+                timestamps.append(timestamp_info)
+                print(f"Selected playlist chunk with score {chunk.get('score', 0):.4f} from Video {timestamp_info['video_index']}: {chunk['text_preview'][:50]}")
+        else:
+            # Use top 5 chunks after reranking for single videos
+            for chunk in chunks_with_scores[:5]:
+                selected_chunks.append(chunk["text"])
             
-            timestamps.append(timestamp_info)
-            print(f"Selected chunk with score {chunk.get('score', 0):.4f}: {chunk['text_preview'][:50]}")
+                timestamp_info = {
+                    "time": chunk["timestamp"],
+                    "formatted_time": chunk["formatted_time"],
+                    "text_preview": chunk["text_preview"]
+                }
+                
+                timestamps.append(timestamp_info)
+                print(f"Selected chunk with score {chunk.get('score', 0):.4f}: {chunk['text_preview'][:50]}")
 
         if not selected_chunks:
             return jsonify({"error": "Could not find relevant content for this question"}), 404
@@ -1010,6 +1089,18 @@ def ask_question():
 
         # Combine chunks with paragraph breaks for better readability
         context = "\n\n".join(selected_chunks)
+        
+        # Debug output for chunk structure
+        if DEBUG_MODE:
+            print(f"\n=== DEBUG: Chunk Structure for {content_type} query ===")
+            print(f"Total chunks selected: {len(selected_chunks)}")
+            for i, chunk in enumerate(selected_chunks[:2]):  # Print first 2 chunks
+                print(f"Chunk {i+1} (first 150 chars): {chunk[:150]}")
+            print(f"Context length: {len(context)} characters")
+            if content_type == "playlist":
+                video_indices = list(set([ts.get("video_index", 0) for ts in timestamps]))
+                print(f"Videos represented in chunks: {video_indices}")
+            print("=== END DEBUG ===\n")
         
         # Generate answer
         start_time = time.time()
@@ -1024,8 +1115,20 @@ Your task is to answer questions about a playlist using ONLY the provided transc
 1. Use ONLY the information from the provided transcript segments
 2. If the exact information isn't in the segments, say "This information is not in the playlist segments provided."
 3. If you can make a reasonable inference from the segments, start with "Based on the context..."
-4. When referring to specific videos, mention which video in the playlist contains the information
-5. Keep answers concise but complete
+4. ALWAYS specify which video in the playlist contains the information by referring to its number and title
+5. If information spans multiple videos, clearly indicate each source video
+6. Include relevant timestamps for each piece of information
+7. Structure your answer logically, presenting information in order of relevance
+8. Be precise about which video contains which specific information
+9. If different videos provide contradictory information, highlight the discrepancy
+10. When quoting directly, cite the exact video number
+
+FORMATTING GUIDELINES:
+- When introducing information from a specific video, start that paragraph with "In Video X:"
+- Use bullet points when listing examples or features from the same video
+- Use headings (with ### markdown) to separate information from different videos if appropriate
+- Bold important terms or concepts
+- Use a numbered list if providing sequential steps or explaining a process
 
 SPECIAL INSTRUCTION FOR VIDEO AND TIME REFERENCES:
 When referring to a specific moment in a video in your answer, ALWAYS format it as "Video X [HH:MM:SS]" (e.g., "Video 3 [01:24:30]").
@@ -1037,44 +1140,125 @@ TRANSCRIPT SEGMENTS:
 QUESTION: {question}
 
 ANSWER:""".format(context=context, question=question)
+
+            print(f"Sending playlist prompt to Ollama: {prompt[:200]}...")  # Print first 200 chars of prompt
+            
+            # Query Ollama with error handling for playlist prompt
+            try:
+                print(f"Calling Ollama API with model: {model_name}")
+                response = ollama.chat(
+                    model=model_name, 
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                
+                # Extract relevant data from ChatResponse object
+                # Check if we have a new-style ChatResponse object (dict-like) or old-style object with attributes
+                if isinstance(response, dict) or hasattr(response, 'keys'):
+                    # New style response (dictionary-like)
+                    print("Using new-style dictionary response handling")
+                    response_data = {
+                        "model": response.get("model", model_name),
+                        "message": response.get("message", {})
+                    }
+                    answer_text = response.get("message", {}).get("content", "")
+                else:
+                    # Old style response (object with attributes)
+                    print("Using old-style object response handling")
+                    response_data = {
+                        "model": getattr(response, "model", model_name),
+                        "created_at": getattr(response, "created_at", None),
+                        "eval_duration": getattr(response, "eval_duration", None),
+                        "message": {
+                            "role": getattr(response.message, "role", "assistant") if hasattr(response, "message") else "assistant",
+                            "content": getattr(response.message, "content", None) if hasattr(response, "message") else None
+                        }
+                    }
+                    answer_text = getattr(response.message, "content", "") if hasattr(response, "message") else ""
+                
+                print(f"Ollama response data for playlist: {json.dumps(response_data, indent=2)}")
+                
+                # Validate response content
+                if not answer_text:
+                    print("ERROR: Answer text is empty")
+                    print(f"Response object structure: {type(response)}")
+                    if isinstance(response, dict):
+                        print(f"Response keys: {response.keys()}")
+                    elif hasattr(response, "__dict__"):
+                        print(f"Response attributes: {response.__dict__.keys()}")
+                    raise ValueError("Response missing content")
+                    
+                print(f"Answer text extracted (first 100 chars): {answer_text[:100]}")
+                
+                if not answer_text:
+                    print("ERROR: Answer text is empty")
+                    raise ValueError("Empty answer content")
+                    
+                print(f"Successfully processed playlist answer with length: {len(answer_text)}")
+            except Exception as e:
+                print(f"ERROR in Ollama chat for playlist: {str(e)}")
+                print(f"Exception type: {type(e)}")
+                if 'response' in locals():
+                    print(f"Response content: {getattr(response.message, 'content', 'No content available')}")
+                raise ValueError(f"Failed to get valid response from Ollama for playlist: {str(e)}")
         else:
             # Use standard video prompt
             prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
 
-        print(f"Sending prompt to Ollama: {prompt[:200]}...")  # Print first 200 chars of prompt
+            print(f"Sending prompt to Ollama: {prompt[:200]}...")  # Print first 200 chars of prompt
 
-        # Query Ollama with error handling
-        try:
-            response = ollama.chat(
-                model=model_name, 
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            # Extract relevant data from ChatResponse object
-            response_data = {
-                "model": getattr(response, "model", model_name),
-                "created_at": getattr(response, "created_at", None),
-                "eval_duration": getattr(response, "eval_duration", None),
-                "message": {
-                    "role": response.message.role if hasattr(response.message, "role") else "assistant",
-                    "content": response.message.content if hasattr(response.message, "content") else None
-                }
-            }
-            
-            print(f"Ollama response data: {json.dumps(response_data, indent=2)}")
-            
-            # Validate response content
-            if not response.message or not hasattr(response.message, "content"):
-                raise ValueError("Response missing content")
+            # Query Ollama with error handling
+            try:
+                response = ollama.chat(
+                    model=model_name, 
+                    messages=[{"role": "user", "content": prompt}]
+                )
                 
-            answer_text = response.message.content
-            if not answer_text:
-                raise ValueError("Empty answer content")
-        except Exception as e:
-            print(f"Error in Ollama chat: {str(e)}")
-            if 'response' in locals():
-                print(f"Response content: {getattr(response.message, 'content', 'No content available')}")
-            raise ValueError(f"Failed to get valid response from Ollama: {str(e)}")
+                # Extract relevant data from ChatResponse object
+                # Check if we have a new-style ChatResponse object (dict-like) or old-style object with attributes
+                if isinstance(response, dict) or hasattr(response, 'keys'):
+                    # New style response (dictionary-like)
+                    print("Using new-style dictionary response handling")
+                    response_data = {
+                        "model": response.get("model", model_name),
+                        "message": response.get("message", {})
+                    }
+                    answer_text = response.get("message", {}).get("content", "")
+                else:
+                    # Old style response (object with attributes)
+                    print("Using old-style object response handling")
+                    response_data = {
+                        "model": getattr(response, "model", model_name),
+                        "created_at": getattr(response, "created_at", None),
+                        "eval_duration": getattr(response, "eval_duration", None),
+                        "message": {
+                            "role": getattr(response.message, "role", "assistant") if hasattr(response, "message") else "assistant",
+                            "content": getattr(response.message, "content", None) if hasattr(response, "message") else None
+                        }
+                    }
+                    answer_text = getattr(response.message, "content", "") if hasattr(response, "message") else ""
+                
+                print(f"Ollama response data: {json.dumps(response_data, indent=2)}")
+                
+                # Validate response content
+                if not answer_text:
+                    print("ERROR: Answer text is empty")
+                    print(f"Response object structure: {type(response)}")
+                    if isinstance(response, dict):
+                        print(f"Response keys: {response.keys()}")
+                    elif hasattr(response, "__dict__"):
+                        print(f"Response attributes: {response.__dict__.keys()}")
+                    raise ValueError("Response missing content")
+                    
+                print(f"Answer text extracted (first 100 chars): {answer_text[:100]}")
+                
+                if not answer_text:
+                    print("ERROR: Answer text is empty")
+                    raise ValueError("Empty answer content")
+            except Exception as e:
+                print(f"Error in Ollama chat: {str(e)}")
+                if 'response' in locals():
+                    print(f"Response content: {getattr(response.message, 'content', 'No content available')}")
+                raise ValueError(f"Failed to get valid response from Ollama: {str(e)}")
         
         end_time = time.time()
         
@@ -1083,13 +1267,35 @@ ANSWER:""".format(context=context, question=question)
             "answer": answer_text,
             "timestamps": timestamps,
             "content_type": content_type,
-            "time_taken": round(end_time - start_time, 2)
+            "time_taken": round(end_time - start_time, 2),
+            "debug_info": {
+                "chunk_count": len(selected_chunks),
+                "videos_used": list(set([ts.get("video_index", 0) for ts in timestamps])) if content_type == "playlist" else [],
+                "model_used": model_name,
+                "prompt_length": len(prompt) if DEBUG_MODE else 0,
+                "answer_length": len(answer_text) if DEBUG_MODE else 0
+            } if DEBUG_MODE else {}
         })
             
     except Exception as e:
         print(f"Error in ask_question: {str(e)}")
         print(f"Full error details: {traceback.format_exc()}")
-        return jsonify({"error": f"Error generating response: {str(e)}"}), 500
+        
+        # Prepare a more informative error message for the UI
+        error_message = f"Error generating response: {str(e)}"
+        if "Failed to get valid response from Ollama" in str(e):
+            error_message = "The AI model failed to provide a valid response. This might be due to the complexity of the question or the context provided. Please try a different question or use a more capable model."
+        
+        return jsonify({
+            "error": error_message,
+            "timestamps": timestamps if 'timestamps' in locals() else [],
+            "content_type": content_type,
+            "debug_info": {
+                "error_type": str(type(e)),
+                "error_details": str(e),
+                "traceback": traceback.format_exc() if DEBUG_MODE else ""
+            } if DEBUG_MODE else {}
+        }), 500
 
 @app.route("/summarize", methods=["POST"])
 def summarize_video():
@@ -1161,40 +1367,33 @@ def summarize_video():
     # Get video title from any transcript chunk
     video_title = transcript_metadatas[0]["title"] if transcript_metadatas else f"Video {video_id}"
     
-    # Query database for relevant chunks for summary
-    results = collection.query(
-        query_texts=["What is this video about?"],  # General query to get relevant chunks
-        where={"video_id": video_id},
-        n_results=10,
-        include=["metadatas", "documents"]
-    )
-
-    if not results["documents"] or len(results["documents"][0]) == 0:
-        return jsonify({"error": "No relevant content found for this video ID"}), 404
-        
-    # Filter out any summaries from the query results
+    # Query database for relevant chunks for summary using our robust method
     summary_chunks = []
     
-    for i, metadata in enumerate(results["metadatas"][0]):
-        if metadata.get("type") != "summary":
-            summary_chunks.append(results["documents"][0][i])
+    try:
+        print(f"Performing robust query for video summary: {video_id}")
+        query_docs, query_metadatas, _ = safe_chroma_query(
+            "What is this video about?",
+            {"video_id": video_id},
+            n_results=10
+        )
+        
+        if query_docs and query_metadatas:
+            for i, metadata in enumerate(query_metadatas):
+                if metadata.get("type") != "summary":
+                        summary_chunks.append(query_docs[i])
+        
+        print(f"Query returned {len(summary_chunks)} relevant chunks for summary")
+    except Exception as e:
+        print(f"Error in summary query: {str(e)}")
+        # Fall back to using all transcript chunks if query fails
+        print(f"Falling back to using all transcript chunks for summary")
+        summary_chunks = transcript_docs[:10]  # Use up to 10 chunks
     
     if not summary_chunks:
         return jsonify({"error": "No transcript chunks available for summarization"}), 404
     
-    # If too many chunks, select representative ones
-    selected_chunks = summary_chunks
-    if len(summary_chunks) > 5:
-        # Take first, some from middle, and last chunk
-        selected_chunks = [
-            summary_chunks[0],
-            summary_chunks[len(summary_chunks)//4],
-            summary_chunks[len(summary_chunks)//2],
-            summary_chunks[3*len(summary_chunks)//4],
-            summary_chunks[-1]
-        ]
-    
-    context = "\n\n".join(selected_chunks)
+    context = "\n\n".join(summary_chunks)
     
     # Format summary prompt using the template
     prompt = SUMMARY_PROMPT_TEMPLATE.format(title=video_title, context=context)
@@ -1303,8 +1502,8 @@ def summarize_playlist():
             print(f"Error checking for cached playlist summary: {str(e)}")
             # Continue with generating a new summary
 
-    # Get all chunks for this playlist
     try:
+        # Get all chunks for this playlist
         all_chunks = collection.get(
             where={"playlist_id": playlist_id},
             include=["metadatas", "documents"]
@@ -1559,7 +1758,6 @@ FORMAT YOUR RESPONSE AS JSON with the following structure:
             print(f"Error caching playlist summary: {str(e)}")
         
         return jsonify(summary_data)
-        
     except Exception as e:
         print(f"Error generating playlist summary: {str(e)}")
         print(traceback.format_exc())
@@ -1696,7 +1894,6 @@ def get_chunks():
             "chunks": chunks,
             "count": len(chunks)
         })
-        
     except Exception as e:
         print(f"Error retrieving chunks: {str(e)}")
         print(traceback.format_exc())

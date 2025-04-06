@@ -7,9 +7,45 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <style>
+        :root {
+            /* YouTube color scheme */
+            --yt-red: #FF0000;
+            --yt-dark-red: #CC0000;
+            --yt-black: #282828;
+            --yt-dark-gray: #0F0F0F;
+            --yt-gray: #606060;
+            --yt-light-gray: #F8F8F8;
+            --yt-white: #FFFFFF;
+            
+            /* Light mode (default) */
+            --primary-color: var(--yt-red);
+            --primary-hover: var(--yt-dark-red);
+            --background-color: var(--yt-light-gray);
+            --card-bg: var(--yt-white);
+            --text-color: var(--yt-black);
+            --secondary-text: var(--yt-gray);
+            --border-color: #EBEBEB;
+            --timestamp-bg: rgba(255, 0, 0, 0.1);
+            --timestamp-hover: rgba(255, 0, 0, 0.2);
+            --button-text: var(--yt-white);
+        }
+        
+        /* Dark mode class */
+        .dark-mode {
+            --background-color: var(--yt-dark-gray);
+            --card-bg: var(--yt-black);
+            --text-color: var(--yt-white);
+            --secondary-text: #AAAAAA;
+            --border-color: #383838;
+            --timestamp-bg: rgba(255, 0, 0, 0.2);
+            --timestamp-hover: rgba(255, 0, 0, 0.3);
+        }
+        
         body {
             padding-top: 20px;
-            background-color: #f8f9fa;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            transition: background-color 0.3s ease, color 0.3s ease;
         }
         .container {
             max-width: 1200px;
@@ -17,9 +53,17 @@
         .card {
             margin-bottom: 20px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            background-color: var(--card-bg);
+            border-color: var(--border-color);
+            color: var(--text-color);
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+        .card-header {
+            background-color: var(--card-bg);
+            border-color: var(--border-color);
         }
         .timestamp {
-            color: #0d6efd;
+            color: var(--primary-color);
             cursor: pointer;
             text-decoration: underline;
             font-weight: bold;
@@ -27,12 +71,248 @@
             display: inline-block;
             padding: 2px 6px;
             border-radius: 4px;
-            background-color: rgba(13, 110, 253, 0.1);
+            background-color: var(--timestamp-bg);
             transition: background-color 0.2s;
         }
         .timestamp:hover {
-            background-color: rgba(13, 110, 253, 0.2);
+            background-color: var(--timestamp-hover);
         }
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+            color: var(--button-text);
+        }
+        .btn-primary:hover, .btn-primary:focus {
+            background-color: var(--primary-hover);
+            border-color: var(--primary-hover);
+        }
+        .btn-outline-primary {
+            color: var(--primary-color);
+            border-color: var(--primary-color);
+        }
+        .btn-outline-primary:hover, .btn-outline-primary:focus {
+            background-color: var(--primary-color);
+            color: var(--button-text);
+        }
+        .list-group-item {
+            background-color: var(--card-bg);
+            border-color: var(--border-color);
+            color: var(--text-color);
+        }
+        .form-control, .form-select {
+            background-color: var(--card-bg);
+            border-color: var(--border-color);
+            color: var(--text-color);
+        }
+        .form-control:focus, .form-select:focus {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+        }
+        .text-muted {
+            color: var(--secondary-text) !important;
+        }
+        .bg-light {
+            background-color: var(--card-bg) !important;
+        }
+        .modal-content {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+        }
+        .nav-tabs .nav-link {
+            color: var(--text-color);
+        }
+        .nav-tabs .nav-link.active {
+            background-color: var(--card-bg);
+            color: var(--primary-color);
+            border-bottom-color: var(--primary-color);
+        }
+        /* Dark mode toggle */
+        .dark-mode-toggle {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 50%;
+            width: 45px;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+            color: var(--primary-color);
+        }
+        .dark-mode-toggle:hover {
+            transform: scale(1.1);
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .dark-mode-toggle i {
+            font-size: 1.2rem;
+        }
+        
+        /* YouTube Logo in header */
+        .youtube-logo {
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 10px;
+        }
+        .youtube-logo i {
+            color: var(--primary-color);
+            font-size: 1.8rem;
+        }
+        
+        /* Dark mode specific adjustments */
+        .dark-mode .video-thumbnail {
+            border: 1px solid var(--border-color);
+        }
+        .dark-mode .form-control::placeholder {
+            color: #888;
+        }
+        .dark-mode .nav-tabs {
+            border-color: var(--border-color);
+        }
+        
+        /* Fix for playlist summary in dark mode */
+        .dark-mode .card-header {
+            color: var(--text-color);
+            background-color: var(--card-bg);
+            border-color: var(--border-color);
+        }
+        
+        .dark-mode .collapse,
+        .dark-mode .collapse.show,
+        .dark-mode .card-body {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+            border-color: var(--border-color);
+        }
+        
+        .dark-mode .video-summary-card .card-header .badge,
+        .dark-mode #videoNavStrip .video-index {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        
+        .dark-mode #videoSummariesContainer .card,
+        .dark-mode #playlistOverviewCollapse {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+        }
+        
+        /* Make expand/collapse controls more visible in dark mode */
+        .dark-mode .btn-outline-secondary {
+            color: #aaa;
+            border-color: #555;
+        }
+        
+        .dark-mode .btn-outline-secondary:hover {
+            background-color: #555;
+            color: white;
+        }
+        
+        /* Ensure all summary text is properly visible */
+        .dark-mode .key-points,
+        .dark-mode .key-points li,
+        .dark-mode #playlistOverviewText,
+        .dark-mode #videoSummariesContainer .col-md-8 {
+            color: var(--text-color);
+        }
+        
+        /* Ensure video navigation strip items are visible */
+        .dark-mode #videoNavStrip .video-title {
+            color: var(--text-color);
+        }
+        
+        /* Fix video titles in card headers for dark mode */
+        .dark-mode .video-summary-card .card-header h6,
+        .dark-mode .video-summary-card .card-header .m-0 {
+            color: var(--text-color) !important;
+        }
+        
+        /* Also ensure that any other text in the card headers is visible */
+        .dark-mode .card-header {
+            color: var(--text-color) !important;
+        }
+        
+        /* Fix badges in dark mode */
+        .dark-mode .badge.bg-primary,
+        .dark-mode .badge.bg-danger,
+        .dark-mode .badge.bg-secondary {
+            color: white;
+        }
+        
+        /* Fix dark mode visibility for playlist item titles */
+        .dark-mode #videoSummariesContainer .card-header,
+        .dark-mode #videoSummariesContainer .card-header h6,
+        .dark-mode #videoSummariesContainer .card-header .m-0,
+        .dark-mode #videoSummariesContainer .card-header span:not(.badge) {
+            color: var(--text-color) !important;
+        }
+        
+        /* Fix text color for all video titles in playlist */
+        .dark-mode #videoSummariesContainer .card,
+        .dark-mode #videoSummariesContainer .card-header {
+            color: var(--text-color) !important;
+            border-color: var(--border-color);
+        }
+        
+        /* Ensure video title text is always visible in dark mode */
+        .dark-mode .video-title-text {
+            color: var(--text-color) !important;
+        }
+        
+        /* Specifically target the video titles in the collapsed sections */
+        .dark-mode #videoSummariesContainer a,
+        .dark-mode #videoSummariesContainer a:hover,
+        .dark-mode #videoSummariesContainer a:visited {
+            color: var(--primary-color);
+        }
+        
+        /* Make sure the text inside all playlist videos is visible */
+        .dark-mode #videoSummariesContainer div,
+        .dark-mode #videoSummariesContainer p,
+        .dark-mode #videoSummariesContainer h1,
+        .dark-mode #videoSummariesContainer h2, 
+        .dark-mode #videoSummariesContainer h3,
+        .dark-mode #videoSummariesContainer h4,
+        .dark-mode #videoSummariesContainer h5,
+        .dark-mode #videoSummariesContainer h6,
+        .dark-mode #videoSummariesContainer span:not(.badge) {
+            color: var(--text-color) !important;
+        }
+        
+        /* Fix any text that might be inside buttons */
+        .dark-mode #videoSummariesContainer button:not(.btn-primary):not(.btn-danger):not(.btn-secondary) {
+            color: var(--text-color) !important;
+        }
+        
+        /* Enhancement for the collapsible video content in dark mode */
+        .dark-mode .collapse .card-body,
+        .dark-mode .collapse.show .card-body {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+            border-top: 1px solid var(--border-color);
+        }
+        
+        /* Fix key points list in dark mode */
+        .dark-mode .key-points li::marker {
+            color: var(--primary-color);
+        }
+        
+        /* Fix the highlighted number buttons in playlist */
+        .dark-mode .badge {
+            color: white;
+        }
+        
+        /* Fix playlist number button colors */
+        .badge.bg-primary {
+            background-color: var(--primary-color) !important;
+        }
+        
         #loading {
             display: none;
             text-align: center;
@@ -57,7 +337,7 @@
             background-color: #28a745;
         }
         .status-offline {
-            background-color: #dc3545;
+            background-color: var(--primary-color);
         }
         #modelStatus {
             font-size: 14px;
@@ -69,7 +349,7 @@
             border-bottom: 1px solid #eee;
         }
         .video-item:hover {
-            background-color: #f0f0f0;
+            background-color: rgba(0,0,0,0.05);
         }
         .video-title {
             white-space: nowrap;
@@ -87,8 +367,8 @@
             transition: all 0.2s ease;
         }
         #chunksList .list-group-item:hover {
-            border-left-color: #0d6efd;
-            background-color: #f8f9fa;
+            border-left-color: var(--primary-color);
+            background-color: rgba(0,0,0,0.05);
         }
         #chunksPlaceholder {
             padding: 30px;
@@ -97,34 +377,34 @@
             font-style: italic;
         }
         .timestamp-large {
-            color: #0d6efd;
+            color: var(--primary-color);
             cursor: pointer;
             text-decoration: underline;
             font-weight: bold;
             font-size: 1.2em;
             padding: 5px 10px;
-            background-color: #f0f8ff;
+            background-color: var(--timestamp-bg);
             border-radius: 5px;
             display: inline-block;
         }
         .timestamp-large:hover {
-            background-color: #e6f2ff;
+            background-color: var(--timestamp-hover);
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
         /* Enhanced styles for inline timestamps in answers */
         #answer a.timestamp {
             display: inline-block;
-            color: #0d6efd;
+            color: var(--primary-color);
             font-weight: bold;
-            background-color: rgba(13, 110, 253, 0.1);
+            background-color: var(--timestamp-bg);
             padding: 0 6px;
             border-radius: 4px;
             text-decoration: none;
-            border-bottom: 1px dotted #0d6efd;
+            border-bottom: 1px dotted var(--primary-color);
             transition: all 0.2s ease;
         }
         #answer a.timestamp:hover {
-            background-color: rgba(13, 110, 253, 0.2);
+            background-color: var(--timestamp-hover);
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
             transform: translateY(-1px);
         }
@@ -148,7 +428,7 @@
             position: absolute;
             top: 0;
             left: 0;
-            background-color: rgba(13, 110, 253, 0.8);
+            background-color: var(--primary-color);
             color: white;
             padding: 2px 6px;
             font-size: 12px;
@@ -166,7 +446,7 @@
         }
         .video-summary-card {
             margin-bottom: 15px;
-            border-left: 4px solid #0d6efd;
+            border-left: 4px solid var(--primary-color);
         }
         .video-summary-card .card-header {
             background-color: #f8f9fa;
@@ -202,11 +482,27 @@
             overflow: hidden;
             text-overflow: ellipsis;
         }
+        /* Enhance playlist number badges in dark mode */
+        .dark-mode .badge.bg-danger,
+        .dark-mode .badge.bg-primary,
+        .dark-mode .video-nav-item .video-index {
+            background-color: var(--primary-color) !important;
+            color: white;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
+    <!-- Dark Mode Toggle Button -->
+    <div class="dark-mode-toggle" id="darkModeToggle" title="Toggle Dark Mode">
+        <i class="bi bi-sun-fill"></i>
+    </div>
+    
     <div class="container">
-        <h1 class="text-center mb-4">Talk to YouTube Video 🎬</h1>
+        <h1 class="text-center mb-4">
+            <span class="youtube-logo"><i class="bi bi-youtube"></i></span>
+            Talk to YouTube Video
+        </h1>
         
         <div class="row">
             <!-- Left column -->
@@ -297,12 +593,12 @@
                                     <div class="tab-pane fade" id="summary-tab-pane" role="tabpanel" tabindex="0">
                                         <!-- Video Summary Section (shown for single videos) -->
                                         <div id="videoSummarySection">
-                                            <button class="btn btn-primary mb-3" id="summarizeBtn">Generate Summary</button>
-                                            <div id="summarySection" style="display: none;">
-                                                <h5>Video Summary:</h5>
-                                                <div id="summary" class="p-3 bg-light rounded"></div>
-                                                <div id="summaryMeta" class="text-muted mt-2 small">
-                                                    <span id="summarySource" style="display: none;"><span class="badge bg-info">Cached</span> Generated on <span id="summaryTime"></span></span>
+                                        <button class="btn btn-primary mb-3" id="summarizeBtn">Generate Summary</button>
+                                        <div id="summarySection" style="display: none;">
+                                            <h5>Video Summary:</h5>
+                                            <div id="summary" class="p-3 bg-light rounded"></div>
+                                            <div id="summaryMeta" class="text-muted mt-2 small">
+                                                <span id="summarySource" style="display: none;"><span class="badge bg-info">Cached</span> Generated on <span id="summaryTime"></span></span>
                                                 </div>
                                             </div>
                                         </div>
@@ -417,6 +713,26 @@
         const videoList = document.getElementById('videoList');
         const loadChunksBtn = document.getElementById('loadChunksBtn');
         
+        // Apply YouTube theme to Bootstrap elements
+        function applyYouTubeTheme() {
+            // Convert Bootstrap primary color to YouTube red
+            document.querySelectorAll('.bg-primary').forEach(el => {
+                el.classList.remove('bg-primary');
+                el.classList.add('bg-danger');
+            });
+            
+            // Also update any other Bootstrap theme colors as needed
+            document.querySelectorAll('.badge.bg-secondary').forEach(el => {
+                if (el.textContent.trim() === 'Playlist') {
+                    el.classList.remove('bg-secondary');
+                    el.classList.add('bg-danger');
+                }
+            });
+        }
+        
+        // Call the function to apply YouTube theme
+        applyYouTubeTheme();
+        
         // Save selected model when changed
         modelDropdown.addEventListener('change', function() {
             localStorage.setItem('selectedModel', this.value);
@@ -517,7 +833,7 @@
                 
                 // Add videos and playlists with appropriate icons
                 data.all.forEach(item => {
-                    const div = document.createElement('div');
+                        const div = document.createElement('div');
                     div.className = 'video-item d-flex align-items-center';
                     div.dataset.id = item.id;
                     div.dataset.type = item.type;
@@ -548,7 +864,7 @@
                     
                     // Add delete functionality
                     const deleteBtn = div.querySelector('.delete-video-btn');
-                    deleteBtn.addEventListener('click', (e) => {
+                        deleteBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
                         deleteContent(item.id, item.type);
                     });
@@ -638,7 +954,7 @@
                 showError('Please enter a YouTube URL.');
                 return;
             }
-
+            
             // Basic check to differentiate video vs playlist
             const isPlaylist = url.includes('playlist?list=') || url.includes('list=');
             const endpoint = isPlaylist ? '/process_playlist' : '/process_video';
@@ -648,7 +964,7 @@
             document.getElementById('videoContent').style.display = 'none';
             document.getElementById('loading').style.display = 'block';
             document.getElementById('loadingText').textContent = isPlaylist ? 'Processing playlist... This may take a while.' : 'Processing video...';
-
+            
             try {
                 const response = await fetch(endpoint, {
                     method: 'POST',
@@ -660,7 +976,7 @@
                         model: model
                     })
                 });
-
+                
                 const data = await response.json();
                 document.getElementById('loading').style.display = 'none';
 
@@ -744,16 +1060,16 @@
                 const model = document.getElementById('modelDropdown').value;
                 
                 const response = await fetch('/ask', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        video_id: currentVideoId,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    video_id: currentVideoId,
                         type: currentContentType,  // Added type parameter
-                        question: question,
-                        model: model
-                    })
+                    question: question,
+                    model: model
+                })
                 });
                 
                 const data = await response.json();
@@ -798,7 +1114,7 @@
                                 </div>
                                 <div class="mt-1 text-muted">${ts.text_preview}</div>
                             `;
-                        } else {
+                            } else {
                             tsElement.innerHTML = `
                                 <div class="d-flex justify-content-between align-items-center">
                                     <span class="timestamp-large" 
@@ -1370,12 +1686,13 @@
                         const summaryCard = document.createElement('div');
                         summaryCard.className = 'card video-summary-card';
                         summaryCard.id = `video-summary-${index + 1}`;
+                        summaryCard.dataset.darkModeElement = 'playlist-item';
                         
                         summaryCard.innerHTML = `
                             <div class="card-header d-flex justify-content-between align-items-center">
                                 <h6 class="m-0">
                                     <span class="badge bg-primary me-2">${index + 1}</span>
-                                    ${videoSummary.title}
+                                    <span class="video-title-text">${videoSummary.title}</span>
                                 </h6>
                                 <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" 
                                         data-bs-target="#video-summary-collapse-${index + 1}">
@@ -1427,6 +1744,32 @@
                             collapse.hide();
                         });
                     });
+                    
+                    // Apply dark mode styles to newly created elements if dark mode is active
+                    if (document.body.classList.contains('dark-mode')) {
+                        // Fix playlist summary elements
+                        document.querySelectorAll('.collapse, .collapse.show, .card-body').forEach(el => {
+                            el.style.backgroundColor = 'var(--card-bg)';
+                            el.style.color = 'var(--text-color)';
+                            el.style.borderColor = 'var(--border-color)';
+                        });
+                        
+                        // Fix badge colors in playlist
+                        document.querySelectorAll('.badge.bg-primary').forEach(el => {
+                            el.style.backgroundColor = 'var(--primary-color)';
+                            el.style.color = 'white';
+                        });
+                        
+                        // Fix video titles in card headers
+                        document.querySelectorAll('.video-summary-card .card-header h6, .video-summary-card .card-header .m-0').forEach(el => {
+                            el.style.color = 'var(--text-color)';
+                        });
+                        
+                        // Fix all card headers
+                        document.querySelectorAll('.card-header').forEach(el => {
+                            el.style.color = 'var(--text-color)';
+                        });
+                    }
                 } else {
                     videoSummariesContainer.innerHTML = '<div class="alert alert-info">No individual video summaries available.</div>';
                 }
@@ -1441,6 +1784,124 @@
         document.getElementById('summarizePlaylistBtn').addEventListener('click', () => {
             summarizePlaylist();
         });
+        
+        // Dark Mode Functionality
+        const darkModeToggle = document.getElementById('darkModeToggle');
+        const body = document.body;
+        const icon = darkModeToggle.querySelector('i');
+        
+        // Check for saved dark mode preference
+        if (localStorage.getItem('darkMode') === 'enabled') {
+            enableDarkMode();
+        }
+        
+        // Toggle dark mode
+        darkModeToggle.addEventListener('click', () => {
+            if (body.classList.contains('dark-mode')) {
+                disableDarkMode();
+            } else {
+                enableDarkMode();
+            }
+        });
+        
+        // Functions to enable/disable dark mode
+        function enableDarkMode() {
+            body.classList.add('dark-mode');
+            icon.classList.replace('bi-sun-fill', 'bi-moon-fill');
+            localStorage.setItem('darkMode', 'enabled');
+            
+            // Update Bootstrap elements that may not be controlled by CSS variables
+            document.querySelectorAll('.bg-light').forEach(el => {
+                el.classList.remove('bg-light');
+                el.classList.add('bg-dark');
+                el.classList.add('text-light');
+            });
+            
+            // Add text-light to necessary elements
+            document.querySelectorAll('.card, .modal-content, .list-group-item').forEach(el => {
+                if (!el.classList.contains('text-light')) {
+                    el.classList.add('text-dark-mode');
+                }
+            });
+            
+            // Fix playlist summary elements
+            document.querySelectorAll('.collapse, .collapse.show, .card-body').forEach(el => {
+                el.style.backgroundColor = 'var(--card-bg)';
+                el.style.color = 'var(--text-color)';
+                el.style.borderColor = 'var(--border-color)';
+            });
+            
+            // Fix video titles in playlist
+            document.querySelectorAll('.video-title-text').forEach(el => {
+                el.style.color = 'var(--text-color)';
+            });
+            
+            // Fix all titles in video summary cards
+            document.querySelectorAll('.video-summary-card .card-header h6, .video-summary-card .card-header .m-0').forEach(el => {
+                el.style.color = 'var(--text-color)';
+            });
+            
+            // Fix all card headers
+            document.querySelectorAll('.card-header').forEach(el => {
+                el.style.color = 'var(--text-color)';
+            });
+            
+            // Specifically target elements with the data-dark-mode-element attribute
+            document.querySelectorAll('[data-dark-mode-element="playlist-item"] .card-header').forEach(el => {
+                el.style.color = 'var(--text-color)';
+                // Also target all child elements that contain text
+                el.querySelectorAll('h6, span:not(.badge)').forEach(child => {
+                    child.style.color = 'var(--text-color)';
+                });
+            });
+            
+            // Fix badge colors in playlist
+            document.querySelectorAll('.badge.bg-primary').forEach(el => {
+                el.style.backgroundColor = 'var(--primary-color)';
+                el.style.color = 'white';
+            });
+            
+            // Fix video titles in card headers
+            document.querySelectorAll('.video-summary-card .card-header h6, .video-summary-card .card-header .m-0').forEach(el => {
+                el.style.color = 'var(--text-color)';
+            });
+            
+            // Fix all card headers
+            document.querySelectorAll('.card-header').forEach(el => {
+                el.style.color = 'var(--text-color)';
+            });
+            
+            // Update any dynamically created elements
+            applyYouTubeTheme();
+        }
+        
+        function disableDarkMode() {
+            body.classList.remove('dark-mode');
+            icon.classList.replace('bi-moon-fill', 'bi-sun-fill');
+            localStorage.setItem('darkMode', 'disabled');
+            
+            // Revert Bootstrap elements
+            document.querySelectorAll('.bg-dark').forEach(el => {
+                el.classList.remove('bg-dark');
+                el.classList.remove('text-light');
+                el.classList.add('bg-light');
+            });
+            
+            // Remove text-light from elements
+            document.querySelectorAll('.text-dark-mode').forEach(el => {
+                el.classList.remove('text-dark-mode');
+            });
+            
+            // Reset inline styles from playlist elements
+            document.querySelectorAll('.collapse, .collapse.show, .card-body').forEach(el => {
+                el.style.backgroundColor = '';
+                el.style.color = '';
+                el.style.borderColor = '';
+            });
+            
+            // Update any dynamically created elements
+            applyYouTubeTheme();
+        }
     </script>
 </body>
 </html> 

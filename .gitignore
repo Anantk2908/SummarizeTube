@@ -78,3 +78,7 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *,cover 
+app.py.bak
+delete_func.py
+config_func.py
+app.py.backup
